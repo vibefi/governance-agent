@@ -218,7 +218,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
 
     match fs::rename(&tmp_path, path) {
         Ok(()) => Ok(()),
-        Err(err) if path.exists() => {
+        Err(_err) if path.exists() => {
             let _ = fs::remove_file(&tmp_path);
             Ok(())
         }

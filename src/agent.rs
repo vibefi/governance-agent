@@ -45,9 +45,16 @@ impl Agent {
     }
 
     pub async fn run_loop(&self, once: bool) -> Result<()> {
+        tracing::debug!(
+            config = %self.redacted_config_json(),
+            "resolved run config"
+        );
         tracing::info!(
             poll_interval_secs = self.config.poll_interval_secs,
             mode = if once { "single-pass" } else { "continuous" },
+            state_path = %self.storage.state_path().display(),
+            from_block = self.config.network.from_block,
+            auto_vote = self.config.auto_vote,
             "agent run loop started"
         );
 
@@ -111,6 +118,13 @@ impl Agent {
 
         let storage_path = self.storage.state_path().display().to_string();
         tracing::info!(path = storage_path, "storage path configured");
+        let state = self.storage.load()?;
+        tracing::info!(
+            last_scanned_block = state.last_scanned_block,
+            stored_proposals = state.proposals.len(),
+            configured_from_block = self.config.network.from_block,
+            "local scan state"
+        );
 
         if self.config.notifications.telegram.enabled {
             tracing::info!("telegram notifier enabled");
@@ -121,17 +135,37 @@ impl Agent {
 
     async fn scan_and_process_once(&self) -> Result<()> {
         let mut state = self.storage.load()?;
+        tracing::info!(
+            last_scanned_block = state.last_scanned_block,
+            stored_proposals = state.proposals.len(),
+            configured_from_block = self.config.network.from_block,
+            "loaded local scan state"
+        );
 
         let latest = self.chain.latest_block().await?;
-        let start = if state.last_scanned_block == 0 {
-            self.config.network.from_block
+        if state.last_scanned_block > latest {
+            tracing::warn!(
+                last_scanned_block = state.last_scanned_block,
+                latest_block = latest,
+                stored_proposals = state.proposals.len(),
+                "state cursor is ahead of chain tip; assuming chain reset and resetting local state"
+            );
+            state = State::default();
+        }
+
+        let (start, resume_source) = if state.last_scanned_block == 0 {
+            (self.config.network.from_block, "config.from_block")
         } else {
-            state.last_scanned_block.saturating_add(1)
+            (
+                state.last_scanned_block.saturating_add(1),
+                "state.last_scanned_block+1",
+            )
         };
 
         tracing::info!(
             start_block = start,
             latest_block = latest,
+            resume_source,
             "checking chain for new blocks"
         );
 
@@ -216,5 +250,15 @@ impl Agent {
         }
 
         Ok(())
+    }
+
+    fn redacted_config_json(&self) -> String {
+        let mut config = self.config.clone();
+        if config.signer.keystore_password.is_some() {
+            config.signer.keystore_password = Some("[REDACTED]".to_string());
+        }
+
+        serde_json::to_string_pretty(&config)
+            .unwrap_or_else(|_| "<failed to serialize config>".to_string())
     }
 }
