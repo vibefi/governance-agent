@@ -232,10 +232,16 @@ impl VoteExecutor for KeystoreVoteExecutor {
             .context("failed to submit castVoteWithReason tx")?;
 
         let tx_hash = format!("{:#x}", pending.tx_hash());
-        let _receipt = pending
+        let receipt = pending
             .get_receipt()
             .await
             .context("failed waiting for vote tx receipt")?;
+        if !receipt.status() {
+            return Err(anyhow!(
+                "vote tx {} reverted on-chain",
+                tx_hash
+            ));
+        }
 
         Ok(VoteExecution {
             proposal_id: decision.proposal_id.clone(),
