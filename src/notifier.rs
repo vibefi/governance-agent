@@ -8,6 +8,7 @@ use crate::config::NotificationConfig;
 
 #[async_trait]
 pub trait Notifier: Send + Sync {
+    fn name(&self) -> &'static str;
     async fn notify(&self, message: &str) -> Result<()>;
 }
 
@@ -32,7 +33,14 @@ impl MultiNotifier {
 
     pub async fn notify_all(&self, message: &str) {
         for notifier in &self.notifiers {
-            let _ = notifier.notify(message).await;
+            if let Err(err) = notifier.notify(message).await {
+                tracing::warn!(
+                    target = "notifier",
+                    notifier = notifier.name(),
+                    error = %err,
+                    "notification attempt failed"
+                );
+            }
         }
     }
 }
@@ -41,6 +49,10 @@ pub struct LogNotifier {}
 
 #[async_trait]
 impl Notifier for LogNotifier {
+    fn name(&self) -> &'static str {
+        "log"
+    }
+
     async fn notify(&self, message: &str) -> Result<()> {
         tracing::info!(target = "notifier", "{}", message);
         Ok(())
@@ -55,6 +67,10 @@ pub struct TelegramNotifier {
 
 #[async_trait]
 impl Notifier for TelegramNotifier {
+    fn name(&self) -> &'static str {
+        "telegram"
+    }
+
     async fn notify(&self, message: &str) -> Result<()> {
         let env_name = self
             .bot_token_env

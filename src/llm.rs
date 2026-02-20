@@ -2,12 +2,26 @@ use std::env;
 
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
+use once_cell::sync::Lazy;
 use regex::Regex;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{LlmConfig, ProviderConfig};
+
+static REDACTION_PATTERNS: Lazy<[Regex; 5]> = Lazy::new(|| {
+    [
+        Regex::new(r"sk-[A-Za-z0-9_-]{16,}").expect("valid regex"),
+        Regex::new(r"sk-ant-[A-Za-z0-9_-]{16,}").expect("valid regex"),
+        Regex::new(r"(?i)bearer\s+[A-Za-z0-9._-]{16,}").expect("valid regex"),
+        Regex::new(r"(?i)(api[_-]?key\s*[:=]\s*)([A-Za-z0-9._-]{8,})").expect("valid regex"),
+        Regex::new(
+            r"(?i)((?:eth(?:ereum)?[_-]?)?private[_-]?key\s*[:=]\s*)(0x[a-f0-9]{64}|[a-f0-9]{64})",
+        )
+        .expect("valid regex"),
+    ]
+});
 
 #[derive(Debug, Clone)]
 pub struct LlmContext {
@@ -229,15 +243,8 @@ impl LlmProvider for AnthropicProvider {
 }
 
 pub fn redact_secrets(input: &str) -> String {
-    let patterns = [
-        Regex::new(r"sk-[A-Za-z0-9_-]{16,}").expect("valid regex"),
-        Regex::new(r"sk-ant-[A-Za-z0-9_-]{16,}").expect("valid regex"),
-        Regex::new(r"(?i)bearer\s+[A-Za-z0-9._-]{16,}").expect("valid regex"),
-        Regex::new(r"(?i)(api[_-]?key\s*[:=]\s*)([A-Za-z0-9._-]{8,})").expect("valid regex"),
-    ];
-
     let mut redacted = input.to_string();
-    for regex in patterns {
+    for regex in REDACTION_PATTERNS.iter() {
         redacted = regex
             .replace_all(&redacted, |caps: &regex::Captures<'_>| {
                 if caps.len() > 2 {
@@ -263,5 +270,14 @@ mod tests {
         assert!(!redacted.contains("sk-test-1234567890abcdef"));
         assert!(!redacted.contains("abc123456789"));
         assert!(redacted.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn redacts_ethereum_private_key_patterns() {
+        let key = "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let text = format!("ethereum_private_key={key}");
+        let redacted = redact_secrets(&text);
+        assert!(!redacted.contains(key));
+        assert!(redacted.contains("ethereum_private_key=[REDACTED]"));
     }
 }

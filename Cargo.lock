@@ -2047,6 +2047,7 @@ dependencies = [
  "clap",
  "dirs",
  "hex",
+ "once_cell",
  "pretty_assertions",
  "regex",
  "reqwest",

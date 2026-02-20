@@ -244,7 +244,15 @@ pub fn build_vote_reason(decision: &Decision, max_len: usize) -> String {
     }
 
     if text.len() > max_len {
-        text.truncate(max_len);
+        if max_len == 0 {
+            text.clear();
+        } else {
+            let mut idx = max_len.min(text.len());
+            while idx > 0 && !text.is_char_boundary(idx) {
+                idx -= 1;
+            }
+            text.truncate(idx);
+        }
     }
 
     text
@@ -272,5 +280,22 @@ mod tests {
 
         let reason = build_vote_reason(&decision, 120);
         assert_eq!(reason.len(), 120);
+    }
+
+    #[test]
+    fn vote_reason_truncation_handles_utf8_boundaries() {
+        let decision = Decision {
+            proposal_id: 1,
+            vote: VoteChoice::For,
+            confidence: 0.9,
+            reasons: vec!["🚀".repeat(64)],
+            blocking_findings: Vec::new(),
+            requires_human_override: false,
+            decided_at: Utc::now(),
+        };
+
+        let reason = build_vote_reason(&decision, 121);
+        assert!(reason.len() <= 121);
+        assert!(reason.is_char_boundary(reason.len()));
     }
 }

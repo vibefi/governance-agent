@@ -21,7 +21,7 @@ max_priority_fee_gwei = 5
 [ipfs]
 gateway_url = "http://127.0.0.1:8080"
 request_timeout_secs = 20
-# Defaults to shared cache with client: ~/.cache/VibeFi
+# Supports "~" expansion; defaults to shared cache with client: ~/.cache/VibeFi
 cache_dir = "~/.cache/VibeFi"
 
 [storage]

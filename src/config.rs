@@ -1,4 +1,7 @@
-use std::{env, fs, path::PathBuf};
+use std::{
+    env, fs,
+    path::{Component, Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -161,6 +164,7 @@ impl AppConfig {
 
         cfg.apply_env();
         cfg.apply_cli(cli);
+        cfg.expand_paths();
 
         Ok(cfg)
     }
@@ -366,6 +370,37 @@ impl AppConfig {
             self.auto_vote = true;
         }
     }
+
+    fn expand_paths(&mut self) {
+        if let Some(path) = self.signer.keystore_path.clone() {
+            self.signer.keystore_path = Some(expand_tilde_path(&path));
+        }
+
+        self.storage.data_dir = expand_tilde_path(&self.storage.data_dir);
+
+        if let Some(path) = self.ipfs.cache_dir.clone() {
+            self.ipfs.cache_dir = Some(expand_tilde_path(&path));
+        }
+    }
+}
+
+fn expand_tilde_path(path: &Path) -> PathBuf {
+    let mut components = path.components();
+    match components.next() {
+        Some(Component::Normal(seg)) if seg == "~" => {
+            if let Some(home) = dirs::home_dir() {
+                let rest = components.as_path();
+                if rest.as_os_str().is_empty() {
+                    home
+                } else {
+                    home.join(rest)
+                }
+            } else {
+                path.to_path_buf()
+            }
+        }
+        _ => path.to_path_buf(),
+    }
 }
 
 impl LlmConfig {
@@ -421,6 +456,8 @@ impl SignerConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use super::{AppConfig, ConfidenceProfile, DecisionConfig};
 
     #[test]
@@ -473,5 +510,15 @@ mod tests {
         let (approve, reject) = cfg.resolved_thresholds();
         assert_eq!(approve, 0.88);
         assert_eq!(reject, 0.22);
+    }
+
+    #[test]
+    fn tilde_paths_expand_to_home_directory() {
+        let Some(home) = dirs::home_dir() else {
+            return;
+        };
+
+        let expanded = super::expand_tilde_path(Path::new("~/.governance-agent"));
+        assert_eq!(expanded, home.join(".governance-agent"));
     }
 }
