@@ -1,0 +1,195 @@
+use std::{fs, time::Duration};
+
+use anyhow::Result;
+
+use crate::{
+    chain::ChainAdapter,
+    config::AppConfig,
+    decision::decide,
+    ipfs::BundleFetcher,
+    llm::CompositeLlm,
+    notifier::MultiNotifier,
+    review::review_proposal,
+    signer::{DryRunVoteExecutor, KeystoreVoteExecutor, VoteExecutor},
+    storage::{State, Storage},
+    types::ProcessedProposal,
+};
+
+pub struct Agent {
+    config: AppConfig,
+    chain: ChainAdapter,
+    storage: Storage,
+    bundle_fetcher: BundleFetcher,
+    llm: CompositeLlm,
+    notifier: MultiNotifier,
+    prompt_override: Option<String>,
+}
+
+impl Agent {
+    pub fn new(config: AppConfig) -> Result<Self> {
+        let prompt_override = config
+            .review
+            .prompt_file
+            .as_ref()
+            .and_then(|path| fs::read_to_string(path).ok());
+
+        Ok(Self {
+            chain: ChainAdapter::new(&config.network),
+            storage: Storage::new(&config.storage)?,
+            bundle_fetcher: BundleFetcher::new(&config.ipfs)?,
+            llm: CompositeLlm::from_config(&config.llm),
+            notifier: MultiNotifier::from_config(&config.notifications),
+            config,
+            prompt_override,
+        })
+    }
+
+    pub async fn run_loop(&self, once: bool) -> Result<()> {
+        loop {
+            self.scan_and_process_once().await?;
+            if once {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_secs(self.config.poll_interval_secs)).await;
+        }
+    }
+
+    pub async fn backfill(&self, from_block: u64, to_block: Option<u64>) -> Result<()> {
+        let mut state = self.storage.load()?;
+        let latest = self.chain.latest_block().await?;
+        let end = to_block.unwrap_or(latest);
+        self.process_range(&mut state, from_block, end).await?;
+        state.last_scanned_block = state.last_scanned_block.max(end);
+        self.storage.save(&state)?;
+        Ok(())
+    }
+
+    pub async fn review_once(&self, proposal_id: u64) -> Result<()> {
+        let proposal = self
+            .chain
+            .fetch_proposal_by_id(proposal_id, self.config.network.from_block)
+            .await?;
+
+        let review = review_proposal(
+            &proposal,
+            &self.config.review,
+            &self.bundle_fetcher,
+            &self.llm,
+            self.prompt_override.as_deref(),
+        )
+        .await?;
+
+        let decision = decide(self.config.decision.profile, &review);
+        tracing::info!(
+            proposal_id = proposal_id,
+            vote = ?decision.vote,
+            confidence = decision.confidence,
+            "review-once complete"
+        );
+
+        Ok(())
+    }
+
+    pub async fn doctor(&self) -> Result<()> {
+        let chain_id = self.chain.health_check().await?;
+        tracing::info!(chain_id, "rpc health check succeeded");
+
+        let storage_path = self.storage.state_path().display().to_string();
+        tracing::info!(path = storage_path, "storage path configured");
+
+        if self.config.notifications.telegram.enabled {
+            tracing::info!("telegram notifier enabled");
+        }
+
+        Ok(())
+    }
+
+    async fn scan_and_process_once(&self) -> Result<()> {
+        let mut state = self.storage.load()?;
+
+        let latest = self.chain.latest_block().await?;
+        let start = if state.last_scanned_block == 0 {
+            self.config.network.from_block
+        } else {
+            state.last_scanned_block.saturating_add(1)
+        };
+
+        if latest < start {
+            tracing::debug!(latest, start, "no new blocks to scan");
+            return Ok(());
+        }
+
+        self.process_range(&mut state, start, latest).await?;
+        state.last_scanned_block = latest;
+        self.storage.save(&state)?;
+
+        Ok(())
+    }
+
+    async fn process_range(&self, state: &mut State, from_block: u64, to_block: u64) -> Result<()> {
+        let proposals = self.chain.fetch_proposals(from_block, to_block).await?;
+        if proposals.is_empty() {
+            tracing::info!(from_block, to_block, "no proposals found in range");
+            return Ok(());
+        }
+
+        tracing::info!(
+            count = proposals.len(),
+            from_block,
+            to_block,
+            "processing proposals"
+        );
+
+        let vote_executor: Box<dyn VoteExecutor> = if self.config.auto_vote {
+            Box::new(
+                KeystoreVoteExecutor::from_config(&self.config.network, &self.config.signer)
+                    .await?,
+            )
+        } else {
+            Box::new(DryRunVoteExecutor)
+        };
+
+        for proposal in proposals {
+            let key = proposal.proposal_id.to_string();
+            if state.proposals.contains_key(&key) {
+                continue;
+            }
+
+            let review = review_proposal(
+                &proposal,
+                &self.config.review,
+                &self.bundle_fetcher,
+                &self.llm,
+                self.prompt_override.as_deref(),
+            )
+            .await?;
+
+            let decision = decide(self.config.decision.profile, &review);
+            let vote_execution = match vote_executor.submit_vote(&decision).await {
+                Ok(vote) => Some(vote),
+                Err(err) => {
+                    tracing::warn!(proposal_id = proposal.proposal_id, error = %err, "vote submission failed");
+                    None
+                }
+            };
+
+            let processed = ProcessedProposal {
+                proposal,
+                review,
+                decision,
+                vote_execution,
+            };
+
+            self.notifier
+                .notify_all(&format!(
+                    "governance-agent processed proposal {} with vote {:?}",
+                    processed.proposal.proposal_id, processed.decision.vote
+                ))
+                .await;
+
+            state.proposals.insert(key, processed);
+        }
+
+        Ok(())
+    }
+}

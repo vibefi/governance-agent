@@ -1,0 +1,54 @@
+profile = "devnet"
+auto_vote = false
+poll_interval_secs = 5
+
+[network]
+name = "devnet"
+chain_id = 31337
+rpc_url = "http://127.0.0.1:8545"
+governor_address = ""
+dapp_registry_address = ""
+from_block = 0
+
+[signer]
+keystore_path = "/absolute/path/to/keystore.json"
+keystore_password_env = "GOV_AGENT_KEYSTORE_PASSWORD"
+max_vote_reason_len = 240
+
+[ipfs]
+gateway_url = "http://127.0.0.1:8080"
+request_timeout_secs = 20
+
+[storage]
+data_dir = "~/.governance-agent"
+state_file = "state.json"
+
+[review]
+prompt_file = "prompts/default_prompt.md"
+max_bundle_bytes = 41943040
+
+[decision]
+profile = "conservative"
+
+[llm.openai]
+enabled = true
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4.1-mini"
+
+[llm.anthropic]
+enabled = true
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-3-5-sonnet-latest"
+
+[llm.opencode]
+enabled = true
+base_url = "http://127.0.0.1:4096/v1"
+api_key_env = "OPENCODE_API_KEY"
+model = "default"
+
+[notifications.telegram]
+enabled = false
+bot_token_env = "GOV_AGENT_TELEGRAM_BOT_TOKEN"
+chat_id = ""
