@@ -237,10 +237,7 @@ impl VoteExecutor for KeystoreVoteExecutor {
             .await
             .context("failed waiting for vote tx receipt")?;
         if !receipt.status() {
-            return Err(anyhow!(
-                "vote tx {} reverted on-chain",
-                tx_hash
-            ));
+            return Err(anyhow!("vote tx {} reverted on-chain", tx_hash));
         }
 
         Ok(VoteExecution {
