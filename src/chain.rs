@@ -6,6 +6,7 @@ use alloy::{
     rpc::types::Filter,
 };
 use anyhow::{Context, Result, anyhow};
+use tokio::sync::Mutex;
 
 use crate::{
     config::NetworkConfig,
@@ -13,13 +14,13 @@ use crate::{
     types::Proposal,
 };
 
-#[derive(Debug)]
 pub struct ChainAdapter {
     rpc_url: String,
     governor_address: Option<Address>,
     dapp_registry_address: String,
     topic0: String,
     transport: TransportKind,
+    provider: Mutex<Option<DynProvider>>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +53,7 @@ impl ChainAdapter {
             dapp_registry_address: network.dapp_registry_address.clone(),
             topic0: proposal_created_topic0(),
             transport,
+            provider: Mutex::new(None),
         }
     }
 
@@ -133,11 +135,25 @@ impl ChainAdapter {
     }
 
     async fn provider(&self) -> Result<DynProvider> {
-        ProviderBuilder::new()
+        let mut guard = self.provider.lock().await;
+        if let Some(provider) = guard.as_ref() {
+            return Ok(provider.clone());
+        }
+
+        tracing::info!(
+            rpc_url = %self.rpc_url,
+            transport = self.transport.as_str(),
+            "connecting chain provider"
+        );
+
+        let provider = ProviderBuilder::new()
             .connect(&self.rpc_url)
             .await
-            .with_context(|| format!("failed to connect to rpc url {}", self.rpc_url))
-            .map(|provider| provider.erased())
+            .with_context(|| format!("failed to connect to rpc url {}", self.rpc_url))?
+            .erased();
+
+        *guard = Some(provider.clone());
+        Ok(provider)
     }
 }
 
