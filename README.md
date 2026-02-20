@@ -33,9 +33,14 @@ cargo run -- backfill --from-block 10239268 --profile sepolia --rpc-url "$SEPOLI
 ## Configuration
 
 - Optional file: `--config config/example.toml`
+- For `devnet`, defaults can be loaded from `contracts/.devnet/devnet.json` (or `GOV_AGENT_DEVNET_JSON` override), using:
+  - `chainId` -> `network.chain_id`
+  - `vfiGovernor` -> `network.governor_address`
+  - `dappRegistry` -> `network.dapp_registry_address`
 - Env overrides:
   - `GOV_AGENT_PROFILE`
   - `GOV_AGENT_RPC_URL`
+  - `GOV_AGENT_DEVNET_JSON`
   - `GOV_AGENT_GOVERNOR`
   - `GOV_AGENT_DAPP_REGISTRY`
   - `GOV_AGENT_AUTO_VOTE`
@@ -53,6 +58,7 @@ cargo run -- backfill --from-block 10239268 --profile sepolia --rpc-url "$SEPOLI
 ## Notes
 
 - Default mode is dry-run recommendation.
+- `network.chain_id`, `network.governor_address`, and `network.dapp_registry_address` are required. The process exits early when missing/invalid.
 - Auto-vote requires keystore configuration and sends `castVoteWithReason` after preflight:
   - `state == Active`
   - `hasVoted == false`

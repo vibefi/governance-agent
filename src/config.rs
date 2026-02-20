@@ -3,7 +3,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 
 use crate::cli::Cli;
@@ -150,9 +150,28 @@ struct PartialAppConfig {
     notifications: Option<NotificationConfig>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct DevnetDeployment {
+    #[serde(rename = "chainId", alias = "chain_id")]
+    chain_id: Option<u64>,
+    #[serde(
+        rename = "vfiGovernor",
+        alias = "governor_address",
+        alias = "governorAddress"
+    )]
+    vfi_governor: Option<String>,
+    #[serde(
+        rename = "dappRegistry",
+        alias = "dapp_registry_address",
+        alias = "dappRegistryAddress"
+    )]
+    dapp_registry: Option<String>,
+}
+
 impl AppConfig {
     pub fn load(cli: &Cli) -> Result<Self> {
         let mut cfg = Self::for_profile(&cli.profile);
+        cfg.apply_devnet_deploy_defaults()?;
 
         if let Some(path) = &cli.config {
             let raw = fs::read_to_string(path)
@@ -165,6 +184,7 @@ impl AppConfig {
         cfg.apply_env();
         cfg.apply_cli(cli);
         cfg.expand_paths();
+        cfg.validate_required_fields()?;
 
         Ok(cfg)
     }
@@ -371,6 +391,53 @@ impl AppConfig {
         }
     }
 
+    fn apply_devnet_deploy_defaults(&mut self) -> Result<()> {
+        if self.profile != "devnet" && self.network.name != "devnet" {
+            return Ok(());
+        }
+
+        let Some(devnet_path) = resolve_devnet_json_path() else {
+            return Ok(());
+        };
+
+        let raw = fs::read_to_string(&devnet_path).with_context(|| {
+            format!(
+                "failed to read devnet deployment config {}",
+                devnet_path.display()
+            )
+        })?;
+        let deployment: DevnetDeployment = serde_json::from_str(&raw).with_context(|| {
+            format!(
+                "failed to parse devnet deployment config {}",
+                devnet_path.display()
+            )
+        })?;
+
+        if let Some(chain_id) = deployment.chain_id {
+            self.network.chain_id = chain_id;
+        }
+        if let Some(governor) = deployment.vfi_governor
+            && !governor.trim().is_empty()
+        {
+            self.network.governor_address = governor;
+        }
+        if let Some(dapp_registry) = deployment.dapp_registry
+            && !dapp_registry.trim().is_empty()
+        {
+            self.network.dapp_registry_address = dapp_registry;
+        }
+
+        tracing::info!(
+            path = %devnet_path.display(),
+            chain_id = self.network.chain_id,
+            governor_address = self.network.governor_address,
+            dapp_registry_address = self.network.dapp_registry_address,
+            "loaded devnet network defaults from deployment json"
+        );
+
+        Ok(())
+    }
+
     fn expand_paths(&mut self) {
         if let Some(path) = self.signer.keystore_path.clone() {
             self.signer.keystore_path = Some(expand_tilde_path(&path));
@@ -381,6 +448,28 @@ impl AppConfig {
         if let Some(path) = self.ipfs.cache_dir.clone() {
             self.ipfs.cache_dir = Some(expand_tilde_path(&path));
         }
+    }
+
+    fn validate_required_fields(&self) -> Result<()> {
+        if self.network.chain_id == 0 {
+            bail!(
+                "network.chain_id is required and must be > 0 (profile={})",
+                self.profile
+            );
+        }
+
+        validate_required_address(
+            "network.governor_address",
+            &self.network.governor_address,
+            self.profile.as_str(),
+        )?;
+        validate_required_address(
+            "network.dapp_registry_address",
+            &self.network.dapp_registry_address,
+            self.profile.as_str(),
+        )?;
+
+        Ok(())
     }
 }
 
@@ -401,6 +490,45 @@ fn expand_tilde_path(path: &Path) -> PathBuf {
         }
         _ => path.to_path_buf(),
     }
+}
+
+fn resolve_devnet_json_path() -> Option<PathBuf> {
+    if let Ok(path) = env::var("GOV_AGENT_DEVNET_JSON")
+        && !path.trim().is_empty()
+    {
+        return Some(PathBuf::from(path));
+    }
+
+    [
+        PathBuf::from("contracts/.devnet/devnet.json"),
+        PathBuf::from("../contracts/.devnet/devnet.json"),
+    ]
+    .into_iter()
+    .find(|path| path.exists())
+}
+
+fn validate_required_address(field_name: &str, value: &str, profile: &str) -> Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        if profile == "devnet" {
+            return Err(anyhow!(
+                "{} is required for profile devnet. Set it in config/env, or provide contracts/.devnet/devnet.json (override path with GOV_AGENT_DEVNET_JSON).",
+                field_name
+            ));
+        }
+
+        return Err(anyhow!(
+            "{} is required for profile {}",
+            field_name,
+            profile
+        ));
+    }
+
+    trimmed
+        .parse::<alloy::primitives::Address>()
+        .with_context(|| format!("{} must be a valid hex address", field_name))?;
+
+    Ok(())
 }
 
 impl LlmConfig {
@@ -458,7 +586,7 @@ impl SignerConfig {
 mod tests {
     use std::path::Path;
 
-    use super::{AppConfig, ConfidenceProfile, DecisionConfig};
+    use super::{AppConfig, ConfidenceProfile, DecisionConfig, DevnetDeployment};
 
     #[test]
     fn sepolia_defaults_include_known_addresses() {
@@ -520,5 +648,34 @@ mod tests {
 
         let expanded = super::expand_tilde_path(Path::new("~/.governance-agent"));
         assert_eq!(expanded, home.join(".governance-agent"));
+    }
+
+    #[test]
+    fn devnet_deployment_json_shape_is_supported() {
+        let raw = r#"{
+            "chainId": 31337,
+            "vfiGovernor": "0x1111111111111111111111111111111111111111",
+            "dappRegistry": "0x2222222222222222222222222222222222222222"
+        }"#;
+
+        let parsed: DevnetDeployment = serde_json::from_str(raw).expect("devnet json should parse");
+        assert_eq!(parsed.chain_id, Some(31337));
+        assert_eq!(
+            parsed.vfi_governor.as_deref(),
+            Some("0x1111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            parsed.dapp_registry.as_deref(),
+            Some("0x2222222222222222222222222222222222222222")
+        );
+    }
+
+    #[test]
+    fn required_network_fields_are_enforced() {
+        let cfg = AppConfig::for_profile("devnet");
+        let err = cfg
+            .validate_required_fields()
+            .expect_err("devnet defaults should fail without addresses");
+        assert!(err.to_string().contains("network.governor_address"));
     }
 }

@@ -10,7 +10,7 @@ use crate::{
     llm::CompositeLlm,
     notifier::MultiNotifier,
     review::review_proposal,
-    signer::{DryRunVoteExecutor, KeystoreVoteExecutor, VoteExecutor},
+    signer::{DryRunVoteExecutor, KeystoreVoteExecutor, VoteExecutor, signing_readiness_reason},
     storage::{State, Storage},
     types::ProcessedProposal,
 };
@@ -57,6 +57,18 @@ impl Agent {
             auto_vote = self.config.auto_vote,
             "agent run loop started"
         );
+        if self.config.auto_vote {
+            if let Some(reason) = signing_readiness_reason(&self.config.signer) {
+                tracing::warn!(
+                    reason = %reason,
+                    "auto-vote enabled but signer is not fully configured; agent cannot submit votes"
+                );
+            }
+        } else {
+            tracing::info!(
+                "auto-vote disabled; agent will run in dry-run mode and cannot submit votes"
+            );
+        }
 
         loop {
             self.scan_and_process_once().await?;
@@ -200,10 +212,26 @@ impl Agent {
         );
 
         let vote_executor: Box<dyn VoteExecutor> = if self.config.auto_vote {
-            Box::new(
-                KeystoreVoteExecutor::from_config(&self.config.network, &self.config.signer)
-                    .await?,
-            )
+            if let Some(reason) = signing_readiness_reason(&self.config.signer) {
+                tracing::warn!(
+                    reason = %reason,
+                    "signer is not fully configured; continuing in dry-run mode (cannot vote)"
+                );
+                Box::new(DryRunVoteExecutor)
+            } else {
+                match KeystoreVoteExecutor::from_config(&self.config.network, &self.config.signer)
+                    .await
+                {
+                    Ok(executor) => Box::new(executor),
+                    Err(err) => {
+                        tracing::warn!(
+                            error = %err,
+                            "failed to initialize signer executor; continuing in dry-run mode (cannot vote)"
+                        );
+                        Box::new(DryRunVoteExecutor)
+                    }
+                }
+            }
         } else {
             Box::new(DryRunVoteExecutor)
         };

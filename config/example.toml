@@ -4,6 +4,7 @@ poll_interval_secs = 5
 
 [network]
 name = "devnet"
+# Required at runtime; on devnet these can be auto-populated from contracts/.devnet/devnet.json.
 chain_id = 31337
 rpc_url = "http://127.0.0.1:8545"
 governor_address = ""

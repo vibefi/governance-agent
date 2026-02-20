@@ -109,6 +109,41 @@ impl KeystoreVoteExecutor {
     }
 }
 
+pub fn signing_readiness_reason(signer: &SignerConfig) -> Option<String> {
+    let Some(keystore_path) = signer.keystore_path.as_ref() else {
+        return Some("signer.keystore_path is not set".to_string());
+    };
+    if !keystore_path.exists() {
+        return Some(format!(
+            "signer.keystore_path does not exist: {}",
+            keystore_path.display()
+        ));
+    }
+
+    if let Some(password) = &signer.keystore_password
+        && !password.trim().is_empty()
+    {
+        return None;
+    }
+
+    let env_name = signer
+        .keystore_password_env
+        .clone()
+        .unwrap_or_else(|| "GOV_AGENT_KEYSTORE_PASSWORD".to_string());
+
+    match env::var(&env_name) {
+        Ok(password) if !password.trim().is_empty() => None,
+        Ok(_) => Some(format!(
+            "signer password env var {} is set but empty",
+            env_name
+        )),
+        Err(_) => Some(format!(
+            "signer password is missing: set signer.keystore_password or env {}",
+            env_name
+        )),
+    }
+}
+
 #[async_trait]
 impl VoteExecutor for KeystoreVoteExecutor {
     async fn submit_vote(&self, proposal: &Proposal, decision: &Decision) -> Result<VoteExecution> {
@@ -260,11 +295,16 @@ pub fn build_vote_reason(decision: &Decision, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{fs, path::PathBuf};
+
     use chrono::Utc;
 
-    use crate::types::{Decision, VoteChoice};
+    use crate::{
+        config::SignerConfig,
+        types::{Decision, VoteChoice},
+    };
 
-    use super::build_vote_reason;
+    use super::{build_vote_reason, signing_readiness_reason};
 
     #[test]
     fn vote_reason_is_truncated() {
@@ -297,5 +337,51 @@ mod tests {
         let reason = build_vote_reason(&decision, 121);
         assert!(reason.len() <= 121);
         assert!(reason.is_char_boundary(reason.len()));
+    }
+
+    #[test]
+    fn signer_readiness_requires_keystore_path() {
+        let signer = SignerConfig {
+            keystore_path: None,
+            keystore_password_env: Some("TEST_GOV_AGENT_PASSWORD_ENV".to_string()),
+            keystore_password: None,
+            max_vote_reason_len: 240,
+            min_vote_blocks_remaining: 3,
+            max_gas_price_gwei: Some(200),
+            max_priority_fee_gwei: Some(5),
+        };
+
+        let reason = signing_readiness_reason(&signer);
+        assert!(reason.is_some());
+        assert!(
+            reason
+                .unwrap_or_default()
+                .contains("signer.keystore_path is not set")
+        );
+    }
+
+    #[test]
+    fn signer_readiness_accepts_inline_password_when_keystore_exists() {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "gov-agent-test-keystore-{}-{}.json",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+        ));
+
+        fs::write(&path, b"{}").expect("write temp keystore");
+        let signer = SignerConfig {
+            keystore_path: Some(PathBuf::from(&path)),
+            keystore_password_env: Some("TEST_GOV_AGENT_PASSWORD_ENV".to_string()),
+            keystore_password: Some("password".to_string()),
+            max_vote_reason_len: 240,
+            min_vote_blocks_remaining: 3,
+            max_gas_price_gwei: Some(200),
+            max_priority_fee_gwei: Some(5),
+        };
+
+        let reason = signing_readiness_reason(&signer);
+        let _ = fs::remove_file(&path);
+        assert!(reason.is_none());
     }
 }
