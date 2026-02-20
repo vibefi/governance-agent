@@ -21,9 +21,9 @@ pub async fn run() -> Result<()> {
                 Ok(())
             }
         },
-        Command::Doctor => {
+        Command::Status => {
             let agent = Agent::new(config)?;
-            agent.doctor().await
+            agent.status().await
         }
         Command::Run(args) => {
             let agent = Agent::new(config)?;

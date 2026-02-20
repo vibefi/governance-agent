@@ -53,7 +53,7 @@ Deliverables:
   - `run` (daemon)
   - `review-once --proposal-id`
   - `backfill`
-  - `doctor`
+  - `status`
   - `config print`
 - Add layered config (`defaults -> file -> env -> cli`) with typed schema.
 - Add explicit execution gate:

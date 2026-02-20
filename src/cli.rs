@@ -37,31 +37,48 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
+    #[command(
+        about = "Run the agent scan/review loop",
+        long_about = "Continuously scans new blocks for proposals, reviews them, and optionally submits votes when auto-vote is enabled."
+    )]
     Run(RunArgs),
+    #[command(
+        about = "Review a single proposal by id",
+        long_about = "Fetches one proposal by id, runs bundle + LLM review, and prints the resulting decision logs."
+    )]
     ReviewOnce(ReviewOnceArgs),
+    #[command(
+        about = "Process a historical block range",
+        long_about = "Backfills proposal processing for a block range. Use --to-block to cap the range, or omit it to scan through the current chain tip."
+    )]
     Backfill(BackfillArgs),
-    Doctor,
+    #[command(
+        about = "Run health checks (RPC, storage, notifier config)",
+        long_about = "Verifies RPC connectivity and chain id, reports transport mode, prints configured storage path, and indicates notifier configuration. It does not scan proposals or submit votes."
+    )]
+    Status,
+    #[command(about = "Inspect resolved runtime configuration")]
     Config(ConfigArgs),
 }
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    #[arg(long)]
+    #[arg(long, help = "Run a single scan cycle and exit")]
     pub once: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct ReviewOnceArgs {
-    #[arg(long)]
+    #[arg(long, help = "Proposal id to review")]
     pub proposal_id: u64,
 }
 
 #[derive(Debug, Args)]
 pub struct BackfillArgs {
-    #[arg(long)]
+    #[arg(long, help = "Start block number (inclusive)")]
     pub from_block: u64,
 
-    #[arg(long)]
+    #[arg(long, help = "End block number (inclusive); defaults to latest block")]
     pub to_block: Option<u64>,
 }
 
@@ -73,5 +90,6 @@ pub struct ConfigArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
+    #[command(about = "Print the fully resolved config as JSON")]
     Print,
 }

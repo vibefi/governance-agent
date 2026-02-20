@@ -45,11 +45,22 @@ impl Agent {
     }
 
     pub async fn run_loop(&self, once: bool) -> Result<()> {
+        tracing::info!(
+            poll_interval_secs = self.config.poll_interval_secs,
+            mode = if once { "single-pass" } else { "continuous" },
+            "agent run loop started"
+        );
+
         loop {
             self.scan_and_process_once().await?;
             if once {
+                tracing::info!("agent run loop finished single pass");
                 return Ok(());
             }
+            tracing::info!(
+                sleep_secs = self.config.poll_interval_secs,
+                "scan cycle complete; waiting before next block check"
+            );
             tokio::time::sleep(Duration::from_secs(self.config.poll_interval_secs)).await;
         }
     }
@@ -90,7 +101,7 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn doctor(&self) -> Result<()> {
+    pub async fn status(&self) -> Result<()> {
         let chain_id = self.chain.health_check().await?;
         tracing::info!(chain_id, "rpc health check succeeded");
         tracing::info!(
@@ -118,8 +129,18 @@ impl Agent {
             state.last_scanned_block.saturating_add(1)
         };
 
+        tracing::info!(
+            start_block = start,
+            latest_block = latest,
+            "checking chain for new blocks"
+        );
+
         if latest < start {
-            tracing::debug!(latest, start, "no new blocks to scan");
+            tracing::info!(
+                start_block = start,
+                latest_block = latest,
+                "no new blocks to scan"
+            );
             return Ok(());
         }
 

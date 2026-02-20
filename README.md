@@ -6,7 +6,7 @@ Rust long-running process for VibeFi DAO governance proposal review and optional
 
 This repository includes a working foundation through vote execution:
 
-- CLI commands: `run`, `review-once`, `backfill`, `doctor`, `config print`
+- CLI commands: `run`, `review-once`, `backfill`, `status`, `config print`
 - Layered config defaults for `devnet` and `sepolia`
 - `alloy`-based chain adapter and signer execution (no `ethers`/`ethabi`)
 - HTTP/WS autodetect based on `rpc_url` scheme (`http(s)` vs `ws(s)`)
@@ -24,7 +24,7 @@ This repository includes a working foundation through vote execution:
 
 ```bash
 cargo run -- config print
-cargo run -- doctor --profile devnet --rpc-url http://127.0.0.1:8545
+cargo run -- status --profile devnet --rpc-url http://127.0.0.1:8545
 cargo run -- run --profile devnet --rpc-url http://127.0.0.1:8545 --once
 cargo run -- review-once --proposal-id 1 --profile sepolia --rpc-url "$SEPOLIA_RPC_URL"
 cargo run -- backfill --from-block 10239268 --profile sepolia --rpc-url "$SEPOLIA_RPC_URL"
