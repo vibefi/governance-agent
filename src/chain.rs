@@ -1,7 +1,7 @@
 use std::str::FromStr;
 
 use alloy::{
-    primitives::Address,
+    primitives::{Address, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
     rpc::types::Filter,
 };
@@ -107,16 +107,29 @@ impl ChainAdapter {
 
     pub async fn fetch_proposal_by_id(
         &self,
-        proposal_id: u64,
+        proposal_id: &str,
         from_block: u64,
     ) -> Result<Proposal> {
+        let requested = parse_proposal_id(proposal_id)
+            .with_context(|| format!("invalid proposal id {}", proposal_id))?;
         let latest = self.latest_block().await?;
         let proposals = self.fetch_proposals(from_block, latest).await?;
 
-        proposals
-            .into_iter()
-            .find(|p| p.proposal_id == proposal_id)
-            .ok_or_else(|| anyhow!("proposal {proposal_id} not found"))
+        for proposal in proposals {
+            let Ok(candidate) = parse_proposal_id(&proposal.proposal_id) else {
+                tracing::warn!(
+                    proposal_id = %proposal.proposal_id,
+                    "skipping proposal with unparsable proposal id"
+                );
+                continue;
+            };
+
+            if candidate == requested {
+                return Ok(proposal);
+            }
+        }
+
+        Err(anyhow!("proposal {proposal_id} not found"))
     }
 
     async fn provider(&self) -> Result<DynProvider> {
@@ -133,9 +146,26 @@ fn is_ws_url(url: &str) -> bool {
     trimmed.starts_with("ws://") || trimmed.starts_with("wss://")
 }
 
+fn parse_proposal_id(value: &str) -> Result<U256> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("proposal id is empty"));
+    }
+
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return U256::from_str_radix(hex, 16)
+            .map_err(|err| anyhow!("invalid hex proposal id {}: {}", value, err));
+    }
+
+    U256::from_str(trimmed).map_err(|err| anyhow!("invalid decimal proposal id {}: {}", value, err))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_ws_url;
+    use super::{is_ws_url, parse_proposal_id};
 
     #[test]
     fn ws_detection_works_for_ws_and_wss() {
@@ -143,5 +173,16 @@ mod tests {
         assert!(is_ws_url("wss://eth.example"));
         assert!(!is_ws_url("http://127.0.0.1:8545"));
         assert!(!is_ws_url("https://eth.example"));
+    }
+
+    #[test]
+    fn proposal_id_parser_accepts_decimal_and_hex() {
+        let decimal =
+            "85353726111642088776893488059974230743342594789084151765762295675253395008791";
+
+        let parsed_decimal = parse_proposal_id(decimal).expect("decimal parses");
+        let hex = format!("{:#x}", parsed_decimal);
+        let parsed_hex = parse_proposal_id(&hex).expect("hex parses");
+        assert_eq!(parsed_decimal, parsed_hex);
     }
 }

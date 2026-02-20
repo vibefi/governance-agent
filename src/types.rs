@@ -3,7 +3,8 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Proposal {
-    pub proposal_id: u64,
+    #[serde(deserialize_with = "deserialize_proposal_id")]
+    pub proposal_id: String,
     pub proposer: String,
     pub description: String,
     pub vote_start: u64,
@@ -40,7 +41,8 @@ pub enum DecodedAction {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReviewResult {
-    pub proposal_id: u64,
+    #[serde(deserialize_with = "deserialize_proposal_id")]
+    pub proposal_id: String,
     pub root_cid: Option<String>,
     pub findings: Vec<Finding>,
     pub llm_summary: Option<String>,
@@ -73,7 +75,8 @@ pub enum Severity {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Decision {
-    pub proposal_id: u64,
+    #[serde(deserialize_with = "deserialize_proposal_id")]
+    pub proposal_id: String,
     pub vote: VoteChoice,
     pub confidence: f32,
     pub reasons: Vec<String>,
@@ -102,7 +105,8 @@ impl VoteChoice {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VoteExecution {
-    pub proposal_id: u64,
+    #[serde(deserialize_with = "deserialize_proposal_id")]
+    pub proposal_id: String,
     pub submitted: bool,
     pub tx_hash: Option<String>,
     pub reason: String,
@@ -115,4 +119,50 @@ pub struct ProcessedProposal {
     pub review: ReviewResult,
     pub decision: Decision,
     pub vote_execution: Option<VoteExecution>,
+}
+
+fn deserialize_proposal_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum ProposalIdRepr {
+        String(String),
+        U64(u64),
+    }
+
+    match ProposalIdRepr::deserialize(deserializer)? {
+        ProposalIdRepr::String(value) => Ok(value),
+        ProposalIdRepr::U64(value) => Ok(value.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde::Deserialize;
+
+    #[derive(Deserialize)]
+    struct Holder {
+        #[serde(deserialize_with = "super::deserialize_proposal_id")]
+        proposal_id: String,
+    }
+
+    #[test]
+    fn proposal_id_deserializes_from_string() {
+        let value: Holder =
+            serde_json::from_str(r#"{"proposal_id":"85353726111642088776893488059974230743342594789084151765762295675253395008791"}"#)
+                .expect("string proposal id should parse");
+        assert_eq!(
+            value.proposal_id,
+            "85353726111642088776893488059974230743342594789084151765762295675253395008791"
+        );
+    }
+
+    #[test]
+    fn proposal_id_deserializes_from_u64_for_backward_compat() {
+        let value: Holder = serde_json::from_str(r#"{"proposal_id":123}"#)
+            .expect("numeric proposal id should parse");
+        assert_eq!(value.proposal_id, "123");
+    }
 }

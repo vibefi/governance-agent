@@ -38,7 +38,7 @@ pub fn decode_proposal_log(log: &RpcLog, dapp_registry: &str) -> Result<Proposal
         .map_err(|err| anyhow!("failed to decode ProposalCreated log: {err}"))?;
     let event = decoded.inner.data;
 
-    let proposal_id = u256_to_u64(event.proposalId, "proposalId")?;
+    let proposal_id = event.proposalId.to_string();
     let vote_start = u256_to_u64(event.voteStart, "voteStart")?;
     let vote_end = u256_to_u64(event.voteEnd, "voteEnd")?;
 

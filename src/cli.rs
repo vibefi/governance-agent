@@ -69,8 +69,8 @@ pub struct RunArgs {
 
 #[derive(Debug, Args)]
 pub struct ReviewOnceArgs {
-    #[arg(long, help = "Proposal id to review")]
-    pub proposal_id: u64,
+    #[arg(long, help = "Proposal id to review (uint256 as decimal or 0x hex)")]
+    pub proposal_id: String,
 }
 
 #[derive(Debug, Args)]

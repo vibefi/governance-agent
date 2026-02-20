@@ -94,10 +94,10 @@ impl Agent {
         Ok(())
     }
 
-    pub async fn review_once(&self, proposal_id: u64) -> Result<()> {
+    pub async fn review_once(&self, proposal_id: String) -> Result<()> {
         let proposal = self
             .chain
-            .fetch_proposal_by_id(proposal_id, self.config.network.from_block)
+            .fetch_proposal_by_id(&proposal_id, self.config.network.from_block)
             .await?;
 
         let review = review_proposal(
@@ -111,7 +111,7 @@ impl Agent {
 
         let decision = decide(&self.config.decision, &review);
         tracing::info!(
-            proposal_id = proposal_id,
+            proposal_id = %proposal_id,
             vote = ?decision.vote,
             confidence = decision.confidence,
             "review-once complete"
@@ -237,7 +237,7 @@ impl Agent {
         };
 
         for proposal in proposals {
-            let key = proposal.proposal_id.to_string();
+            let key = proposal.proposal_id.clone();
             if state.proposals.contains_key(&key) {
                 continue;
             }

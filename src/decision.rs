@@ -60,7 +60,7 @@ pub fn decide(config: &DecisionConfig, review: &ReviewResult) -> Decision {
     }
 
     Decision {
-        proposal_id: review.proposal_id,
+        proposal_id: review.proposal_id.clone(),
         vote,
         confidence,
         reasons,
@@ -83,7 +83,7 @@ mod tests {
 
     fn review(score: f32, findings: Vec<Finding>) -> ReviewResult {
         ReviewResult {
-            proposal_id: 1,
+            proposal_id: "1".to_string(),
             root_cid: Some("bafy...".to_string()),
             findings,
             llm_summary: None,

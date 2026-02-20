@@ -95,7 +95,7 @@ pub async fn review_proposal(
     };
 
     Ok(ReviewResult {
-        proposal_id: proposal.proposal_id,
+        proposal_id: proposal.proposal_id.clone(),
         root_cid,
         findings,
         llm_summary,

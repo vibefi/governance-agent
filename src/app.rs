@@ -35,7 +35,7 @@ pub async fn run() -> Result<()> {
         }
         Command::ReviewOnce(args) => {
             let agent = Agent::new(config)?;
-            agent.review_once(args.proposal_id).await
+            agent.review_once(args.proposal_id.clone()).await
         }
     }
 }

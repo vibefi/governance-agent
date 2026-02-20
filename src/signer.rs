@@ -1,4 +1,4 @@
-use std::env;
+use std::{env, str::FromStr};
 
 use alloy::{
     network::EthereumWallet,
@@ -43,7 +43,7 @@ impl VoteExecutor for DryRunVoteExecutor {
         decision: &Decision,
     ) -> Result<VoteExecution> {
         Ok(VoteExecution {
-            proposal_id: decision.proposal_id,
+            proposal_id: decision.proposal_id.clone(),
             submitted: false,
             tx_hash: None,
             reason: format!(
@@ -148,7 +148,7 @@ pub fn signing_readiness_reason(signer: &SignerConfig) -> Option<String> {
 impl VoteExecutor for KeystoreVoteExecutor {
     async fn submit_vote(&self, proposal: &Proposal, decision: &Decision) -> Result<VoteExecution> {
         let governor = IVfiGovernor::new(self.governor_address, self.provider.clone());
-        let proposal_id = U256::from(decision.proposal_id);
+        let proposal_id = parse_proposal_id(&decision.proposal_id)?;
 
         let state = governor
             .state(proposal_id)
@@ -238,7 +238,7 @@ impl VoteExecutor for KeystoreVoteExecutor {
             .context("failed waiting for vote tx receipt")?;
 
         Ok(VoteExecution {
-            proposal_id: decision.proposal_id,
+            proposal_id: decision.proposal_id.clone(),
             submitted: true,
             tx_hash: Some(tx_hash),
             reason,
@@ -263,6 +263,23 @@ fn resolve_keystore_password(signer: &SignerConfig) -> Result<String> {
             env_name
         )
     })
+}
+
+fn parse_proposal_id(value: &str) -> Result<U256> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(anyhow!("proposal id is empty"));
+    }
+
+    if let Some(hex) = trimmed
+        .strip_prefix("0x")
+        .or_else(|| trimmed.strip_prefix("0X"))
+    {
+        return U256::from_str_radix(hex, 16)
+            .map_err(|err| anyhow!("invalid hex proposal id {}: {}", value, err));
+    }
+
+    U256::from_str(trimmed).map_err(|err| anyhow!("invalid decimal proposal id {}: {}", value, err))
 }
 
 pub fn build_vote_reason(decision: &Decision, max_len: usize) -> String {
@@ -309,7 +326,7 @@ mod tests {
     #[test]
     fn vote_reason_is_truncated() {
         let decision = Decision {
-            proposal_id: 1,
+            proposal_id: "1".to_string(),
             vote: VoteChoice::For,
             confidence: 0.9,
             reasons: vec!["x".repeat(400)],
@@ -325,7 +342,7 @@ mod tests {
     #[test]
     fn vote_reason_truncation_handles_utf8_boundaries() {
         let decision = Decision {
-            proposal_id: 1,
+            proposal_id: "1".to_string(),
             vote: VoteChoice::For,
             confidence: 0.9,
             reasons: vec!["🚀".repeat(64)],
