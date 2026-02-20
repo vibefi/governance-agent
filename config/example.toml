@@ -1,0 +1,63 @@
+profile = "devnet"
+auto_vote = false
+poll_interval_secs = 5
+
+[network]
+name = "devnet"
+# Required at runtime; on devnet these can be auto-populated from contracts/.devnet/devnet.json.
+chain_id = 31337
+rpc_url = "http://127.0.0.1:8545"
+governor_address = ""
+dapp_registry_address = ""
+from_block = 0
+
+[signer]
+keystore_path = "/absolute/path/to/keystore.json"
+keystore_password_env = "GOV_AGENT_KEYSTORE_PASSWORD"
+max_vote_reason_len = 240
+min_vote_blocks_remaining = 3
+max_gas_price_gwei = 200
+max_priority_fee_gwei = 5
+
+[ipfs]
+gateway_url = "http://127.0.0.1:8080"
+request_timeout_secs = 20
+# Supports "~" expansion; defaults to shared cache with client: ~/.cache/VibeFi
+cache_dir = "~/.cache/VibeFi"
+
+[storage]
+data_dir = "~/.governance-agent"
+state_file = "state.json"
+
+[review]
+prompt_file = "prompts/default_prompt.md"
+max_bundle_bytes = 41943040
+
+[decision]
+# profile is only an alias. Numeric thresholds are the source of truth.
+profile = "conservative"
+approve_threshold = 0.90
+reject_threshold = 0.30
+
+[llm.openai]
+enabled = true
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+model = "gpt-4.1-mini"
+
+[llm.anthropic]
+enabled = true
+base_url = "https://api.anthropic.com/v1"
+api_key_env = "ANTHROPIC_API_KEY"
+model = "claude-3-5-sonnet-latest"
+
+[llm.opencode]
+enabled = true
+base_url = "http://127.0.0.1:4096/v1"
+api_key_env = "OPENCODE_API_KEY"
+model = "default"
+
+[notifications.telegram]
+enabled = false
+bot_token_env = "GOV_AGENT_TELEGRAM_BOT_TOKEN"
+chat_id = ""
