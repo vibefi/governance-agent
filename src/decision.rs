@@ -1,17 +1,20 @@
 use chrono::Utc;
 
 use crate::{
-    config::ConfidenceProfile,
+    config::DecisionConfig,
     types::{Decision, ReviewResult, Severity, VoteChoice},
 };
 
-pub fn decide(profile: ConfidenceProfile, review: &ReviewResult) -> Decision {
-    let (approve_min, reject_max) = thresholds(profile);
+pub fn decide(config: &DecisionConfig, review: &ReviewResult) -> Decision {
+    let (approve_min, reject_max) = config.resolved_thresholds();
 
-    let has_critical = review
+    let blocking_findings = review
         .findings
         .iter()
-        .any(|finding| finding.severity == Severity::Critical);
+        .filter(|finding| finding.severity == Severity::Critical)
+        .map(|finding| finding.message.clone())
+        .collect::<Vec<_>>();
+    let has_critical = !blocking_findings.is_empty();
 
     let (vote, confidence, mut reasons, requires_human_override) = if has_critical {
         (
@@ -61,16 +64,9 @@ pub fn decide(profile: ConfidenceProfile, review: &ReviewResult) -> Decision {
         vote,
         confidence,
         reasons,
+        blocking_findings,
         requires_human_override,
         decided_at: Utc::now(),
-    }
-}
-
-fn thresholds(profile: ConfidenceProfile) -> (f32, f32) {
-    match profile {
-        ConfidenceProfile::Conservative => (0.90, 0.30),
-        ConfidenceProfile::Balanced => (0.75, 0.25),
-        ConfidenceProfile::Aggressive => (0.60, 0.20),
     }
 }
 
@@ -79,7 +75,7 @@ mod tests {
     use chrono::Utc;
 
     use crate::{
-        config::ConfidenceProfile,
+        config::{ConfidenceProfile, DecisionConfig},
         types::{Finding, ReviewResult, Severity, VoteChoice},
     };
 
@@ -91,21 +87,34 @@ mod tests {
             root_cid: Some("bafy...".to_string()),
             findings,
             llm_summary: None,
+            llm_audit: None,
             score,
             reviewed_at: Utc::now(),
         }
     }
 
+    fn conservative_cfg() -> DecisionConfig {
+        DecisionConfig {
+            profile: Some(ConfidenceProfile::Conservative),
+            approve_threshold: None,
+            reject_threshold: None,
+        }
+    }
+
     #[test]
     fn conservative_abstains_in_middle_band() {
-        let decision = decide(ConfidenceProfile::Conservative, &review(0.8, vec![]));
+        let decision = decide(&conservative_cfg(), &review(0.8, vec![]));
         assert_eq!(decision.vote, VoteChoice::Abstain);
     }
 
     #[test]
     fn critical_finding_forces_against() {
         let decision = decide(
-            ConfidenceProfile::Aggressive,
+            &DecisionConfig {
+                profile: Some(ConfidenceProfile::Aggressive),
+                approve_threshold: None,
+                reject_threshold: None,
+            },
             &review(
                 0.95,
                 vec![Finding {
@@ -116,5 +125,6 @@ mod tests {
         );
         assert_eq!(decision.vote, VoteChoice::Against);
         assert!(decision.confidence > 0.9);
+        assert_eq!(decision.blocking_findings, vec!["bad".to_string()]);
     }
 }

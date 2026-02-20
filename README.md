@@ -4,17 +4,20 @@ Rust long-running process for VibeFi DAO governance proposal review and optional
 
 ## Current implementation status
 
-This repository now includes a working Phase 1/2 foundation:
+This repository includes a working foundation through vote execution:
 
 - CLI commands: `run`, `review-once`, `backfill`, `doctor`, `config print`
 - Layered config defaults for `devnet` and `sepolia`
-- JSON-RPC polling of `VfiGovernor` `ProposalCreated` logs
+- `alloy`-based chain adapter and signer execution (no `ethers`/`ethabi`)
+- HTTP/WS autodetect based on `rpc_url` scheme (`http(s)` vs `ws(s)`)
 - Decoding of `DappRegistry.publishDapp` and `upgradeDapp` calldatas
 - Root CID extraction (UTF-8 first, hex fallback)
-- IPFS `manifest.json` fetch, lightweight source/script checks, and LLM context enrichment
-- Decision engine with `conservative` / `balanced` / `aggressive` profiles
+- IPFS `manifest.json` fetch + shared CID cache (compatible with client cache layout)
+- Lightweight source/script checks and LLM context enrichment
+- Decision engine with numeric thresholds and optional profile aliases
 - Keystore-backed vote submission (`castVoteWithReason`) with preflight checks, plus dry-run mode
 - LLM callouts for OpenAI, Anthropic, and OpenCode-compatible APIs with automatic provider fallback
+- LLM audit persistence with prompt/response redaction
 - JSON-file state persistence and block cursoring
 
 ## Usage
@@ -38,9 +41,21 @@ cargo run -- backfill --from-block 10239268 --profile sepolia --rpc-url "$SEPOLI
   - `GOV_AGENT_AUTO_VOTE`
   - `GOV_AGENT_KEYSTORE_PATH`
   - `GOV_AGENT_KEYSTORE_PASSWORD`
+  - `GOV_AGENT_MIN_VOTE_BLOCKS_REMAINING`
+  - `GOV_AGENT_MAX_GAS_PRICE_GWEI`
+  - `GOV_AGENT_MAX_PRIORITY_FEE_GWEI`
+  - `GOV_AGENT_APPROVE_THRESHOLD`
+  - `GOV_AGENT_REJECT_THRESHOLD`
+  - `GOV_AGENT_DECISION_PROFILE`
+  - `GOV_AGENT_IPFS_CACHE_DIR`
   - `GOV_AGENT_DATA_DIR`
 
 ## Notes
 
 - Default mode is dry-run recommendation.
-- Auto-vote requires keystore configuration and sends `castVoteWithReason` after preflight (`state == Active`, `hasVoted == false`).
+- Auto-vote requires keystore configuration and sends `castVoteWithReason` after preflight:
+  - `state == Active`
+  - `hasVoted == false`
+  - enough blocks remain before `voteEnd`
+  - gas/priority fee are under configured caps
+- Default IPFS cache path is `~/.cache/VibeFi`, so governance-agent can reuse bundle artifacts cached by the client on the same machine.

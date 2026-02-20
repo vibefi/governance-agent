@@ -34,6 +34,7 @@ pub struct NetworkConfig {
 pub struct IpfsConfig {
     pub gateway_url: String,
     pub request_timeout_secs: u64,
+    pub cache_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +43,9 @@ pub struct SignerConfig {
     pub keystore_password_env: Option<String>,
     pub keystore_password: Option<String>,
     pub max_vote_reason_len: usize,
+    pub min_vote_blocks_remaining: u64,
+    pub max_gas_price_gwei: Option<u64>,
+    pub max_priority_fee_gwei: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -58,7 +62,31 @@ pub struct ReviewConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecisionConfig {
-    pub profile: ConfidenceProfile,
+    pub profile: Option<ConfidenceProfile>,
+    pub approve_threshold: Option<f32>,
+    pub reject_threshold: Option<f32>,
+}
+
+impl DecisionConfig {
+    pub fn resolved_thresholds(&self) -> (f32, f32) {
+        let profile = self.profile.unwrap_or(ConfidenceProfile::Conservative);
+        let (default_approve, default_reject) = profile_thresholds(profile);
+
+        let approve = self
+            .approve_threshold
+            .filter(|value| (0.0..=1.0).contains(value))
+            .unwrap_or(default_approve);
+        let reject = self
+            .reject_threshold
+            .filter(|value| (0.0..=1.0).contains(value))
+            .unwrap_or(default_reject);
+
+        if reject >= approve {
+            return (default_approve, default_reject);
+        }
+
+        (approve, reject)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -67,6 +95,14 @@ pub enum ConfidenceProfile {
     Conservative,
     Balanced,
     Aggressive,
+}
+
+pub fn profile_thresholds(profile: ConfidenceProfile) -> (f32, f32) {
+    match profile {
+        ConfidenceProfile::Conservative => (0.90, 0.30),
+        ConfidenceProfile::Balanced => (0.75, 0.25),
+        ConfidenceProfile::Aggressive => (0.60, 0.20),
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -161,6 +197,7 @@ impl AppConfig {
             ipfs: IpfsConfig {
                 gateway_url: "http://127.0.0.1:8080".to_string(),
                 request_timeout_secs: 20,
+                cache_dir: None,
             },
             storage: StorageConfig {
                 data_dir: Self::home_data_dir(),
@@ -171,7 +208,9 @@ impl AppConfig {
                 max_bundle_bytes: 40 * 1024 * 1024,
             },
             decision: DecisionConfig {
-                profile: ConfidenceProfile::Conservative,
+                profile: Some(ConfidenceProfile::Conservative),
+                approve_threshold: None,
+                reject_threshold: None,
             },
             llm: LlmConfig::defaults(),
             notifications: NotificationConfig::defaults(),
@@ -195,6 +234,7 @@ impl AppConfig {
             ipfs: IpfsConfig {
                 gateway_url: "https://ipfs.io".to_string(),
                 request_timeout_secs: 30,
+                cache_dir: None,
             },
             storage: StorageConfig {
                 data_dir: Self::home_data_dir(),
@@ -205,7 +245,9 @@ impl AppConfig {
                 max_bundle_bytes: 40 * 1024 * 1024,
             },
             decision: DecisionConfig {
-                profile: ConfidenceProfile::Conservative,
+                profile: Some(ConfidenceProfile::Conservative),
+                approve_threshold: None,
+                reject_threshold: None,
             },
             llm: LlmConfig::defaults(),
             notifications: NotificationConfig::defaults(),
@@ -275,16 +317,44 @@ impl AppConfig {
         {
             self.signer.max_vote_reason_len = parsed;
         }
+        if let Ok(v) = env::var("GOV_AGENT_MIN_VOTE_BLOCKS_REMAINING")
+            && let Ok(parsed) = v.parse::<u64>()
+        {
+            self.signer.min_vote_blocks_remaining = parsed;
+        }
+        if let Ok(v) = env::var("GOV_AGENT_MAX_GAS_PRICE_GWEI") {
+            self.signer.max_gas_price_gwei = v.parse::<u64>().ok();
+        }
+        if let Ok(v) = env::var("GOV_AGENT_MAX_PRIORITY_FEE_GWEI") {
+            self.signer.max_priority_fee_gwei = v.parse::<u64>().ok();
+        }
         if let Ok(v) = env::var("GOV_AGENT_AUTO_VOTE") {
             self.auto_vote = matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES");
         }
         if let Ok(v) = env::var("GOV_AGENT_DATA_DIR") {
             self.storage.data_dir = PathBuf::from(v);
         }
-        if let Ok(v) = env::var("GOV_AGENT_POLL_INTERVAL_SECS") {
-            if let Ok(parsed) = v.parse::<u64>() {
-                self.poll_interval_secs = parsed;
-            }
+        if let Ok(v) = env::var("GOV_AGENT_IPFS_CACHE_DIR") {
+            self.ipfs.cache_dir = Some(PathBuf::from(v));
+        }
+        if let Ok(v) = env::var("GOV_AGENT_POLL_INTERVAL_SECS")
+            && let Ok(parsed) = v.parse::<u64>()
+        {
+            self.poll_interval_secs = parsed;
+        }
+        if let Ok(v) = env::var("GOV_AGENT_DECISION_PROFILE") {
+            self.decision.profile = match v.to_ascii_lowercase().as_str() {
+                "conservative" => Some(ConfidenceProfile::Conservative),
+                "balanced" => Some(ConfidenceProfile::Balanced),
+                "aggressive" => Some(ConfidenceProfile::Aggressive),
+                _ => self.decision.profile,
+            };
+        }
+        if let Ok(v) = env::var("GOV_AGENT_APPROVE_THRESHOLD") {
+            self.decision.approve_threshold = v.parse::<f32>().ok();
+        }
+        if let Ok(v) = env::var("GOV_AGENT_REJECT_THRESHOLD") {
+            self.decision.reject_threshold = v.parse::<f32>().ok();
         }
     }
 
@@ -342,13 +412,16 @@ impl SignerConfig {
             keystore_password_env: Some("GOV_AGENT_KEYSTORE_PASSWORD".to_string()),
             keystore_password: None,
             max_vote_reason_len: 240,
+            min_vote_blocks_remaining: 3,
+            max_gas_price_gwei: Some(200),
+            max_priority_fee_gwei: Some(5),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::AppConfig;
+    use super::{AppConfig, ConfidenceProfile, DecisionConfig};
 
     #[test]
     fn sepolia_defaults_include_known_addresses() {
@@ -369,9 +442,36 @@ mod tests {
         let cfg = AppConfig::for_profile("devnet");
         assert!(cfg.signer.keystore_path.is_none());
         assert_eq!(cfg.signer.max_vote_reason_len, 240);
+        assert_eq!(cfg.signer.min_vote_blocks_remaining, 3);
         assert_eq!(
             cfg.signer.keystore_password_env.as_deref(),
             Some("GOV_AGENT_KEYSTORE_PASSWORD")
         );
+    }
+
+    #[test]
+    fn decision_thresholds_fall_back_to_profile_alias() {
+        let cfg = DecisionConfig {
+            profile: Some(ConfidenceProfile::Balanced),
+            approve_threshold: None,
+            reject_threshold: None,
+        };
+
+        let (approve, reject) = cfg.resolved_thresholds();
+        assert_eq!(approve, 0.75);
+        assert_eq!(reject, 0.25);
+    }
+
+    #[test]
+    fn decision_thresholds_prefer_numeric_over_profile_alias() {
+        let cfg = DecisionConfig {
+            profile: Some(ConfidenceProfile::Conservative),
+            approve_threshold: Some(0.88),
+            reject_threshold: Some(0.22),
+        };
+
+        let (approve, reject) = cfg.resolved_thresholds();
+        assert_eq!(approve, 0.88);
+        assert_eq!(reject, 0.22);
     }
 }

@@ -9,7 +9,6 @@ pub mod ipfs;
 pub mod llm;
 pub mod notifier;
 pub mod review;
-pub mod rpc;
 pub mod signer;
 pub mod storage;
 pub mod types;

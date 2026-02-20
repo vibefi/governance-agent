@@ -44,8 +44,17 @@ pub struct ReviewResult {
     pub root_cid: Option<String>,
     pub findings: Vec<Finding>,
     pub llm_summary: Option<String>,
+    pub llm_audit: Option<LlmAudit>,
     pub score: f32,
     pub reviewed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LlmAudit {
+    pub provider: String,
+    pub model: String,
+    pub prompt_redacted: String,
+    pub response_redacted: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +77,7 @@ pub struct Decision {
     pub vote: VoteChoice,
     pub confidence: f32,
     pub reasons: Vec<String>,
+    pub blocking_findings: Vec<String>,
     pub requires_human_override: bool,
     pub decided_at: DateTime<Utc>,
 }

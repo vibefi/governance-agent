@@ -7,8 +7,8 @@ use serde_json::Value;
 use crate::{
     config::ReviewConfig,
     ipfs::{BundleFetcher, Manifest},
-    llm::{CompositeLlm, LlmContext},
-    types::{DecodedAction, Finding, Proposal, ReviewResult, Severity},
+    llm::{CompositeLlm, LlmContext, redact_secrets},
+    types::{DecodedAction, Finding, LlmAudit, Proposal, ReviewResult, Severity},
 };
 
 const MAX_TEXT_FETCH_BYTES: usize = 24 * 1024;
@@ -75,7 +75,7 @@ pub async fn review_proposal(
         }
     }
 
-    let llm_summary = build_llm_summary(
+    let llm_output = build_llm_summary(
         proposal,
         manifest.as_ref(),
         llm,
@@ -83,17 +83,23 @@ pub async fn review_proposal(
         &llm_context,
     )
     .await;
-    if llm_summary.is_some() {
+    if llm_output.is_some() {
         score += 0.05;
     }
 
     score = score.clamp(0.0, 1.0);
+
+    let (llm_summary, llm_audit) = match llm_output {
+        Some((summary, audit)) => (Some(summary), Some(audit)),
+        None => (None, None),
+    };
 
     Ok(ReviewResult {
         proposal_id: proposal.proposal_id,
         root_cid,
         findings,
         llm_summary,
+        llm_audit,
         score,
         reviewed_at: Utc::now(),
     })
@@ -252,10 +258,10 @@ fn analyze_package_json(
     if let Some(scripts) = value.get("scripts").and_then(|v| v.as_object()) {
         let mut suspicious = Vec::<String>::new();
         for (name, cmd) in scripts {
-            if let Some(cmd_text) = cmd.as_str() {
-                if contains_suspicious_script_cmd(cmd_text) {
-                    suspicious.push(format!("{}={}", name, cmd_text));
-                }
+            if let Some(cmd_text) = cmd.as_str()
+                && contains_suspicious_script_cmd(cmd_text)
+            {
+                suspicious.push(format!("{}={}", name, cmd_text));
             }
         }
 
@@ -279,7 +285,7 @@ async fn build_llm_summary(
     llm: &CompositeLlm,
     prompt_override: Option<&str>,
     llm_context: &[String],
-) -> Option<String> {
+) -> Option<(String, LlmAudit)> {
     let prompt = match prompt_override {
         Some(custom) => format!(
             "{custom}\n\n{}",
@@ -288,9 +294,20 @@ async fn build_llm_summary(
         None => review_prompt(proposal, manifest, llm_context),
     };
 
-    llm.analyze_best_effort(&LlmContext { prompt })
-        .await
-        .map(|resp| format!("[{}:{}] {}", resp.provider, resp.model, resp.text))
+    llm.analyze_best_effort(&LlmContext {
+        prompt: prompt.clone(),
+    })
+    .await
+    .map(|resp| {
+        let summary = format!("[{}:{}] {}", resp.provider, resp.model, resp.text);
+        let audit = LlmAudit {
+            provider: resp.provider,
+            model: resp.model,
+            prompt_redacted: redact_secrets(&prompt),
+            response_redacted: redact_secrets(&resp.text),
+        };
+        (summary, audit)
+    })
 }
 
 fn review_prompt(

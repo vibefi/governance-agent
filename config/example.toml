@@ -14,10 +14,15 @@ from_block = 0
 keystore_path = "/absolute/path/to/keystore.json"
 keystore_password_env = "GOV_AGENT_KEYSTORE_PASSWORD"
 max_vote_reason_len = 240
+min_vote_blocks_remaining = 3
+max_gas_price_gwei = 200
+max_priority_fee_gwei = 5
 
 [ipfs]
 gateway_url = "http://127.0.0.1:8080"
 request_timeout_secs = 20
+# Defaults to shared cache with client: ~/.cache/VibeFi
+cache_dir = "~/.cache/VibeFi"
 
 [storage]
 data_dir = "~/.governance-agent"
@@ -28,7 +33,10 @@ prompt_file = "prompts/default_prompt.md"
 max_bundle_bytes = 41943040
 
 [decision]
+# profile is only an alias. Numeric thresholds are the source of truth.
 profile = "conservative"
+approve_threshold = 0.90
+reject_threshold = 0.30
 
 [llm.openai]
 enabled = true

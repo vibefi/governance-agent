@@ -79,7 +79,7 @@ impl Agent {
         )
         .await?;
 
-        let decision = decide(self.config.decision.profile, &review);
+        let decision = decide(&self.config.decision, &review);
         tracing::info!(
             proposal_id = proposal_id,
             vote = ?decision.vote,
@@ -93,6 +93,10 @@ impl Agent {
     pub async fn doctor(&self) -> Result<()> {
         let chain_id = self.chain.health_check().await?;
         tracing::info!(chain_id, "rpc health check succeeded");
+        tracing::info!(
+            transport = self.chain.transport().as_str(),
+            "rpc transport mode"
+        );
 
         let storage_path = self.storage.state_path().display().to_string();
         tracing::info!(path = storage_path, "storage path configured");
@@ -164,8 +168,8 @@ impl Agent {
             )
             .await?;
 
-            let decision = decide(self.config.decision.profile, &review);
-            let vote_execution = match vote_executor.submit_vote(&decision).await {
+            let decision = decide(&self.config.decision, &review);
+            let vote_execution = match vote_executor.submit_vote(&proposal, &decision).await {
                 Ok(vote) => Some(vote),
                 Err(err) => {
                     tracing::warn!(proposal_id = proposal.proposal_id, error = %err, "vote submission failed");

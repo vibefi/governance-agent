@@ -1,71 +1,73 @@
 use std::str::FromStr;
 
-use alloy_primitives::{Address, keccak256};
+use alloy::{
+    primitives::{Address, U256},
+    rpc::types::Log as RpcLog,
+    sol,
+    sol_types::{SolCall, SolEvent},
+};
 use anyhow::{Result, anyhow};
 use chrono::Utc;
-use ethabi::{ParamType, Token};
 
-use crate::{
-    rpc::{RpcLog, parse_hex_bytes, parse_hex_u64},
-    types::{DecodedAction, Proposal},
-};
+use crate::types::{DecodedAction, Proposal};
 
-const PROPOSAL_CREATED_SIG: &str =
-    "ProposalCreated(uint256,address,address[],uint256[],string[],bytes[],uint256,uint256,string)";
-const PUBLISH_DAPP_SIG: &str = "publishDapp(bytes,string,string,string)";
-const UPGRADE_DAPP_SIG: &str = "upgradeDapp(uint256,bytes,string,string,string)";
+sol! {
+    event ProposalCreated(
+        uint256 proposalId,
+        address proposer,
+        address[] targets,
+        uint256[] values,
+        string[] signatures,
+        bytes[] calldatas,
+        uint256 voteStart,
+        uint256 voteEnd,
+        string description
+    );
+
+    function publishDapp(bytes rootCid, string name, string version, string description);
+    function upgradeDapp(uint256 dappId, bytes rootCid, string name, string version, string description);
+}
 
 pub fn proposal_created_topic0() -> String {
-    format!(
-        "0x{}",
-        hex::encode(keccak256(PROPOSAL_CREATED_SIG.as_bytes()))
-    )
+    format!("{:#x}", ProposalCreated::SIGNATURE_HASH)
 }
 
 pub fn decode_proposal_log(log: &RpcLog, dapp_registry: &str) -> Result<Proposal> {
-    let data = parse_hex_bytes(&log.data)?;
-    let tokens = ethabi::decode(
-        &[
-            ParamType::Uint(256),
-            ParamType::Address,
-            ParamType::Array(Box::new(ParamType::Address)),
-            ParamType::Array(Box::new(ParamType::Uint(256))),
-            ParamType::Array(Box::new(ParamType::String)),
-            ParamType::Array(Box::new(ParamType::Bytes)),
-            ParamType::Uint(256),
-            ParamType::Uint(256),
-            ParamType::String,
-        ],
-        &data,
-    )?;
+    let decoded = log
+        .log_decode_validate::<ProposalCreated>()
+        .map_err(|err| anyhow!("failed to decode ProposalCreated log: {err}"))?;
+    let event = decoded.inner.data;
 
-    let proposal_id = as_u64(&tokens[0])?;
-    let proposer = format_address(as_address(&tokens[1])?);
-    let targets = as_address_vec(&tokens[2])?
+    let proposal_id = u256_to_u64(event.proposalId, "proposalId")?;
+    let vote_start = u256_to_u64(event.voteStart, "voteStart")?;
+    let vote_end = u256_to_u64(event.voteEnd, "voteEnd")?;
+
+    let targets = event
+        .targets
         .into_iter()
-        .map(format_address)
+        .map(|addr| format!("{:#x}", addr))
         .collect::<Vec<_>>();
-    let values = as_u256_vec_to_string(&tokens[3])?;
-    let calldatas = as_bytes_vec_hex(&tokens[5])?;
-    let vote_start = as_u64(&tokens[6])?;
-    let vote_end = as_u64(&tokens[7])?;
-    let description = as_string(&tokens[8])?.to_string();
+    let values = event
+        .values
+        .into_iter()
+        .map(|value| value.to_string())
+        .collect::<Vec<_>>();
+    let calldatas = event
+        .calldatas
+        .into_iter()
+        .map(|data| format!("0x{}", hex::encode(data)))
+        .collect::<Vec<_>>();
 
     let action = decode_action(&targets, &calldatas, dapp_registry);
 
     Ok(Proposal {
         proposal_id,
-        proposer,
-        description,
+        proposer: format!("{:#x}", event.proposer),
+        description: event.description,
         vote_start,
         vote_end,
-        block_number: log
-            .block_number
-            .as_deref()
-            .map(parse_hex_u64)
-            .transpose()?
-            .unwrap_or_default(),
-        tx_hash: log.tx_hash.clone(),
+        block_number: log.block_number.unwrap_or_default(),
+        tx_hash: log.transaction_hash.map(|hash| format!("{:#x}", hash)),
         targets,
         values,
         calldatas,
@@ -79,41 +81,51 @@ pub fn decode_action(
     calldatas: &[String],
     dapp_registry: &str,
 ) -> DecodedAction {
-    let normalized_registry = normalize_address_str(dapp_registry).unwrap_or_default();
+    let Ok(dapp_registry_addr) = Address::from_str(dapp_registry) else {
+        return DecodedAction::Unsupported {
+            reason: format!("invalid dapp registry address configured: {dapp_registry}"),
+        };
+    };
 
     for (idx, target) in targets.iter().enumerate() {
-        let Ok(normalized_target) = normalize_address_str(target) else {
+        let Ok(target_addr) = Address::from_str(target) else {
             continue;
         };
-        if normalized_target != normalized_registry {
+
+        if target_addr != dapp_registry_addr {
             continue;
         }
 
         let Some(calldata_hex) = calldatas.get(idx) else {
             continue;
         };
-        let Ok(calldata) = parse_hex_bytes(calldata_hex) else {
+        let Ok(calldata) = parse_calldata(calldata_hex) else {
             continue;
         };
 
-        if calldata.len() < 4 {
-            continue;
+        if let Ok(call) = publishDappCall::abi_decode(&calldata) {
+            return DecodedAction::PublishDapp {
+                root_cid: decode_root_cid(call.rootCid.as_ref()),
+                name: call.name,
+                version: call.version,
+                description: call.description,
+            };
         }
 
-        let selector = &calldata[..4];
-        let params = &calldata[4..];
-
-        if selector == selector4(PUBLISH_DAPP_SIG).as_slice() {
-            return decode_publish(params).unwrap_or_else(|err| DecodedAction::Unsupported {
-                reason: format!("failed to decode publishDapp calldata: {err}"),
-            });
+        if let Ok(call) = upgradeDappCall::abi_decode(&calldata) {
+            return DecodedAction::UpgradeDapp {
+                dapp_id: call.dappId.to_string(),
+                root_cid: decode_root_cid(call.rootCid.as_ref()),
+                name: call.name,
+                version: call.version,
+                description: call.description,
+            };
         }
 
-        if selector == selector4(UPGRADE_DAPP_SIG).as_slice() {
-            return decode_upgrade(params).unwrap_or_else(|err| DecodedAction::Unsupported {
-                reason: format!("failed to decode upgradeDapp calldata: {err}"),
-            });
-        }
+        return DecodedAction::Unsupported {
+            reason: "target matches dapp registry but calldata did not decode as publishDapp or upgradeDapp"
+                .to_string(),
+        };
     }
 
     DecodedAction::Unsupported {
@@ -121,53 +133,9 @@ pub fn decode_action(
     }
 }
 
-fn decode_publish(params: &[u8]) -> Result<DecodedAction> {
-    let tokens = ethabi::decode(
-        &[
-            ParamType::Bytes,
-            ParamType::String,
-            ParamType::String,
-            ParamType::String,
-        ],
-        params,
-    )?;
-
-    let root_cid = decode_root_cid(as_bytes(&tokens[0])?);
-    Ok(DecodedAction::PublishDapp {
-        root_cid,
-        name: as_string(&tokens[1])?.to_string(),
-        version: as_string(&tokens[2])?.to_string(),
-        description: as_string(&tokens[3])?.to_string(),
-    })
-}
-
-fn decode_upgrade(params: &[u8]) -> Result<DecodedAction> {
-    let tokens = ethabi::decode(
-        &[
-            ParamType::Uint(256),
-            ParamType::Bytes,
-            ParamType::String,
-            ParamType::String,
-            ParamType::String,
-        ],
-        params,
-    )?;
-
-    let dapp_id = as_u64(&tokens[0])?.to_string();
-    let root_cid = decode_root_cid(as_bytes(&tokens[1])?);
-
-    Ok(DecodedAction::UpgradeDapp {
-        dapp_id,
-        root_cid,
-        name: as_string(&tokens[2])?.to_string(),
-        version: as_string(&tokens[3])?.to_string(),
-        description: as_string(&tokens[4])?.to_string(),
-    })
-}
-
 pub fn decode_root_cid(bytes: &[u8]) -> String {
     if bytes.is_empty() {
-        return "".to_string();
+        return String::new();
     }
 
     match String::from_utf8(bytes.to_vec()) {
@@ -176,87 +144,25 @@ pub fn decode_root_cid(bytes: &[u8]) -> String {
     }
 }
 
-fn selector4(signature: &str) -> [u8; 4] {
-    let hash = keccak256(signature.as_bytes());
-    [hash[0], hash[1], hash[2], hash[3]]
+fn u256_to_u64(value: U256, field_name: &str) -> Result<u64> {
+    u64::try_from(value).map_err(|_| anyhow!("{field_name} overflows u64: {value}"))
 }
 
-fn normalize_address_str(input: &str) -> Result<String> {
-    let addr = Address::from_str(input).map_err(|e| anyhow!(e.to_string()))?;
-    Ok(format_address(addr))
-}
-
-fn format_address(addr: Address) -> String {
-    format!("0x{}", hex::encode(addr))
-}
-
-fn as_u64(token: &Token) -> Result<u64> {
-    if let Token::Uint(v) = token {
-        return Ok(v.as_u64());
+fn parse_calldata(value: &str) -> Result<Vec<u8>> {
+    let normalized = value.strip_prefix("0x").unwrap_or(value);
+    if normalized.is_empty() {
+        return Ok(Vec::new());
     }
-    Err(anyhow!("expected uint token"))
-}
-
-fn as_address(token: &Token) -> Result<Address> {
-    if let Token::Address(v) = token {
-        let bytes: [u8; 20] = v.0;
-        return Ok(Address::from_slice(&bytes));
-    }
-    Err(anyhow!("expected address token"))
-}
-
-fn as_address_vec(token: &Token) -> Result<Vec<Address>> {
-    match token {
-        Token::Array(items) => items.iter().map(as_address).collect(),
-        _ => Err(anyhow!("expected address array")),
-    }
-}
-
-fn as_u256_vec_to_string(token: &Token) -> Result<Vec<String>> {
-    match token {
-        Token::Array(items) => items
-            .iter()
-            .map(|item| match item {
-                Token::Uint(v) => Ok(v.to_string()),
-                _ => Err(anyhow!("expected uint in uint array")),
-            })
-            .collect(),
-        _ => Err(anyhow!("expected uint array")),
-    }
-}
-
-fn as_bytes_vec_hex(token: &Token) -> Result<Vec<String>> {
-    match token {
-        Token::Array(items) => items
-            .iter()
-            .map(|item| match item {
-                Token::Bytes(bytes) => Ok(format!("0x{}", hex::encode(bytes))),
-                _ => Err(anyhow!("expected bytes in bytes array")),
-            })
-            .collect(),
-        _ => Err(anyhow!("expected bytes array")),
-    }
-}
-
-fn as_bytes(token: &Token) -> Result<&[u8]> {
-    if let Token::Bytes(bytes) = token {
-        return Ok(bytes.as_slice());
-    }
-    Err(anyhow!("expected bytes token"))
-}
-
-fn as_string(token: &Token) -> Result<&str> {
-    if let Token::String(value) = token {
-        return Ok(value.as_str());
-    }
-    Err(anyhow!("expected string token"))
+    hex::decode(normalized).map_err(|err| anyhow!("invalid calldata hex {value}: {err}"))
 }
 
 #[cfg(test)]
 mod tests {
-    use ethabi::Token;
+    use alloy::primitives::{Bytes, U256};
 
-    use super::{DecodedAction, decode_action, decode_root_cid, selector4};
+    use super::{
+        DecodedAction, SolCall, decode_action, decode_root_cid, publishDappCall, upgradeDappCall,
+    };
 
     #[test]
     fn decode_root_cid_prefers_utf8() {
@@ -272,18 +178,16 @@ mod tests {
 
     #[test]
     fn decode_publish_action_from_calldata() {
-        let params = ethabi::encode(&[
-            Token::Bytes(b"bafy123".to_vec()),
-            Token::String("App".to_string()),
-            Token::String("1.0.0".to_string()),
-            Token::String("desc".to_string()),
-        ]);
-        let mut calldata = selector4("publishDapp(bytes,string,string,string)").to_vec();
-        calldata.extend(params);
+        let call = publishDappCall {
+            rootCid: Bytes::from(b"bafy123".to_vec()),
+            name: "App".to_string(),
+            version: "1.0.0".to_string(),
+            description: "desc".to_string(),
+        };
 
         let decoded = decode_action(
             &["0xfb84b57e757649dff3870f1381c67c9097d0c67f".to_string()],
-            &[format!("0x{}", hex::encode(calldata))],
+            &[format!("0x{}", hex::encode(call.abi_encode()))],
             "0xFb84B57E757649Dff3870F1381C67c9097D0c67f",
         );
 
@@ -305,19 +209,17 @@ mod tests {
 
     #[test]
     fn decode_upgrade_action_from_calldata() {
-        let params = ethabi::encode(&[
-            Token::Uint(ethabi::ethereum_types::U256::from(42u64)),
-            Token::Bytes(b"bafy-upgrade".to_vec()),
-            Token::String("App".to_string()),
-            Token::String("2.0.0".to_string()),
-            Token::String("desc2".to_string()),
-        ]);
-        let mut calldata = selector4("upgradeDapp(uint256,bytes,string,string,string)").to_vec();
-        calldata.extend(params);
+        let call = upgradeDappCall {
+            dappId: U256::from(42u64),
+            rootCid: Bytes::from(b"bafy-upgrade".to_vec()),
+            name: "App".to_string(),
+            version: "2.0.0".to_string(),
+            description: "desc2".to_string(),
+        };
 
         let decoded = decode_action(
             &["0xfb84b57e757649dff3870f1381c67c9097d0c67f".to_string()],
-            &[format!("0x{}", hex::encode(calldata))],
+            &[format!("0x{}", hex::encode(call.abi_encode()))],
             "0xFb84B57E757649Dff3870F1381C67c9097D0c67f",
         );
 
