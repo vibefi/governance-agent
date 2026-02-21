@@ -380,6 +380,11 @@ impl AppConfig {
         if let Ok(v) = env::var("GOV_AGENT_REJECT_THRESHOLD") {
             self.decision.reject_threshold = v.parse::<f32>().ok();
         }
+        if let Ok(v) = env::var("GOV_AGENT_FROM_BLOCK")
+            && let Ok(parsed) = v.parse::<u64>()
+        {
+            self.network.from_block = parsed;
+        }
     }
 
     fn apply_cli(&mut self, cli: &Cli) {
