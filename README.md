@@ -1,4 +1,4 @@
-# governance-agent
+# gov-agent
 
 Rust long-running process for VibeFi DAO governance proposal review and optional vote execution.
 
@@ -64,4 +64,4 @@ cargo run -- backfill --from-block 10239268 --profile sepolia --rpc-url "$SEPOLI
   - `hasVoted == false`
   - enough blocks remain before `voteEnd`
   - gas/priority fee are under configured caps
-- Default IPFS cache path is `~/.cache/VibeFi`, so governance-agent can reuse bundle artifacts cached by the client on the same machine.
+- Default IPFS cache path is `~/.cache/VibeFi`, so gov-agent can reuse bundle artifacts cached by the client on the same machine.

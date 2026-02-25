@@ -1,4 +1,4 @@
-# governance-agent build plan
+# gov-agent build plan
 
 ## Objective
 Build a Rust long-running process that watches `VfiGovernor`, extracts dapp proposal payloads, reviews proposal bundles with LLM/tool pipelines, and outputs or submits votes (`for`/`against`/`abstain`).
@@ -185,7 +185,7 @@ Deliverables:
   - restart mid-pipeline
 
 Deliverables:
-- CI gate with deterministic coverage of the governance-agent critical path.
+- CI gate with deterministic coverage of the gov-agent critical path.
 
 ## Initial default config
 - Storage: JSON

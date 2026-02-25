@@ -16,12 +16,12 @@ RUN apt-get update \
     && useradd --system --create-home --uid 10001 governance
 
 WORKDIR /app
-COPY --from=builder /app/target/release/governance-agent /usr/local/bin/governance-agent
+COPY --from=builder /app/target/release/gov-agent /usr/local/bin/gov-agent
 COPY --from=builder /app/prompts ./prompts
 COPY --from=builder /app/config ./config
 
 USER governance
 ENV RUST_LOG=info
 
-ENTRYPOINT ["governance-agent"]
+ENTRYPOINT ["gov-agent"]
 CMD ["run"]

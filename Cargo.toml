@@ -1,5 +1,5 @@
 [package]
-name = "governance-agent"
+name = "gov-agent"
 version = "0.1.0"
 edition = "2024"
 description = "LLM-assisted VibeFi governance voting agent"

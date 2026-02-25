@@ -201,7 +201,7 @@ impl AppConfig {
     fn home_data_dir() -> PathBuf {
         dirs::home_dir()
             .unwrap_or_else(|| PathBuf::from("."))
-            .join(".governance-agent")
+            .join(".gov-agent")
     }
 
     fn devnet_defaults() -> Self {
@@ -651,8 +651,8 @@ mod tests {
             return;
         };
 
-        let expanded = super::expand_tilde_path(Path::new("~/.governance-agent"));
-        assert_eq!(expanded, home.join(".governance-agent"));
+        let expanded = super::expand_tilde_path(Path::new("~/.gov-agent"));
+        assert_eq!(expanded, home.join(".gov-agent"));
     }
 
     #[test]

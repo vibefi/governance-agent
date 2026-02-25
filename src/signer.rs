@@ -287,7 +287,7 @@ fn parse_proposal_id(value: &str) -> Result<U256> {
 
 pub fn build_vote_reason(decision: &Decision, max_len: usize) -> String {
     let mut text = format!(
-        "governance-agent vote={} confidence={:.2}; {}",
+        "gov-agent vote={} confidence={:.2}; {}",
         decision.vote.to_support_u8(),
         decision.confidence,
         decision.reasons.join(" | ")

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use clap::{Args, Parser, Subcommand};
 
 #[derive(Debug, Parser)]
-#[command(name = "governance-agent")]
+#[command(name = "gov-agent")]
 #[command(about = "VibeFi governance review and voting agent")]
 pub struct Cli {
     #[arg(long, global = true)]

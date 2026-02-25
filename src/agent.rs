@@ -269,7 +269,7 @@ impl Agent {
 
             self.notifier
                 .notify_all(&format!(
-                    "governance-agent processed proposal {} with vote {:?}",
+                    "gov-agent processed proposal {} with vote {:?}",
                     processed.proposal.proposal_id, processed.decision.vote
                 ))
                 .await;
