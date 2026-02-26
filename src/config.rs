@@ -135,7 +135,6 @@ pub fn profile_thresholds(profile: ConfidenceProfile) -> (f32, f32) {
 pub struct LlmConfig {
     pub openai: ProviderConfig,
     pub anthropic: ProviderConfig,
-    pub opencode: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -576,19 +575,13 @@ impl LlmConfig {
                 enabled: true,
                 base_url: Some("https://api.openai.com/v1".to_string()),
                 api_key_env: Some("OPENAI_API_KEY".to_string()),
-                model: Some("gpt-4.1-mini".to_string()),
+                model: Some("gpt-5-nano".to_string()),
             },
             anthropic: ProviderConfig {
                 enabled: true,
                 base_url: Some("https://api.anthropic.com/v1".to_string()),
                 api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
-                model: Some("claude-3-5-sonnet-latest".to_string()),
-            },
-            opencode: ProviderConfig {
-                enabled: true,
-                base_url: Some("http://127.0.0.1:4096/v1".to_string()),
-                api_key_env: Some("OPENCODE_API_KEY".to_string()),
-                model: Some("default".to_string()),
+                model: Some("claude-haiku-4-5".to_string()),
             },
         }
     }

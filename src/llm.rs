@@ -49,7 +49,6 @@ impl CompositeLlm {
         let providers: Vec<Box<dyn LlmProvider>> = vec![
             Box::new(OpenAiLikeProvider::new("openai", &config.openai)),
             Box::new(AnthropicProvider::new(&config.anthropic)),
-            Box::new(OpenAiLikeProvider::new("opencode", &config.opencode)),
         ];
         Self { providers }
     }
@@ -110,41 +109,9 @@ impl LlmProvider for OpenAiLikeProvider {
             .clone()
             .unwrap_or_else(|| "default".to_string());
 
-        let response = self
-            .http
-            .post(format!(
-                "{}/chat/completions",
-                base_url.trim_end_matches('/')
-            ))
-            .bearer_auth(api_key)
-            .json(&json!({
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": "You are a governance review assistant."},
-                    {"role": "user", "content": ctx.prompt}
-                ],
-                "temperature": 0.1
-            }))
-            .send()
+        let text = self
+            .call_responses_api(&base_url, &api_key, &model, &ctx.prompt)
             .await?;
-
-        if !response.status().is_success() {
-            return Err(anyhow!(
-                "{} provider returned HTTP {}",
-                self.name,
-                response.status()
-            ));
-        }
-
-        let body: serde_json::Value = response.json().await?;
-        let text = body
-            .get("choices")
-            .and_then(|v| v.get(0))
-            .and_then(|v| v.get("message"))
-            .and_then(|v| v.get("content"))
-            .and_then(|v| v.as_str())
-            .unwrap_or_default()
-            .to_string();
 
         if text.is_empty() {
             return Err(anyhow!("{} provider response missing content", self.name));
@@ -155,6 +122,41 @@ impl LlmProvider for OpenAiLikeProvider {
             model,
             text,
         })
+    }
+}
+
+impl OpenAiLikeProvider {
+    async fn call_responses_api(
+        &self,
+        base_url: &str,
+        api_key: &str,
+        model: &str,
+        prompt: &str,
+    ) -> Result<String> {
+        let response = self
+            .http
+            .post(format!("{}/responses", base_url.trim_end_matches('/')))
+            .bearer_auth(api_key)
+            .json(&json!({
+                "model": model,
+                "input": prompt,
+            }))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body: serde_json::Value = response.json().await?;
+        if !status.is_success() {
+            return Err(anyhow!(
+                "{} provider returned HTTP {} with body {}",
+                self.name,
+                status,
+                body
+            ));
+        }
+
+        extract_responses_text(&body)
+            .ok_or_else(|| anyhow!("{} provider response missing output text", self.name))
     }
 }
 
@@ -257,6 +259,34 @@ pub fn redact_secrets(input: &str) -> String {
     }
 
     redacted
+}
+
+fn extract_responses_text(body: &serde_json::Value) -> Option<String> {
+    if let Some(text) = body.get("output_text").and_then(|value| value.as_str())
+        && !text.trim().is_empty()
+    {
+        return Some(text.to_string());
+    }
+
+    let text = body
+        .get("output")
+        .and_then(|value| value.as_array())
+        .and_then(|output| {
+            output.iter().find_map(|item| {
+                item.get("content")
+                    .and_then(|value| value.as_array())
+                    .and_then(|content| {
+                        content.iter().find_map(|entry| {
+                            entry
+                                .get("text")
+                                .and_then(|value| value.as_str())
+                                .map(|value| value.to_string())
+                        })
+                    })
+            })
+        });
+
+    text.filter(|value| !value.trim().is_empty())
 }
 
 #[cfg(test)]

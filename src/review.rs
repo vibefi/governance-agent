@@ -389,9 +389,9 @@ fn review_prompt(
     };
 
     let bundle_section = bundle_snapshot.unwrap_or("Bundle snapshot unavailable.");
-
+    //Return ONLY JSON in this exact shape: {{\"score\": <number between 0.0 and 1.0>}}. Do not include markdown or any extra keys.\n\n
     format!(
-        "Return ONLY JSON in this exact shape: {{\"score\": <number between 0.0 and 1.0>}}. Do not include markdown or any extra keys.\n\nReview this governance proposal and provide a score on the scale 0.0-1.0, where 0.0 = an unsafe or unsecure proposal, 0.5 = a neutral proposal, and 1.0 = a perfectly safe and secure proposal. You can provide values in between 0.0-1.0 depending on your confidence. Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}\n\nBundle snapshot:\n{}",
+        "Review this governance proposal and provide a score on the scale 0.0-1.0, where 0.0 = an unsafe or unsecure proposal, 0.5 = a neutral proposal, and 1.0 = a perfectly safe and secure proposal. You can provide a score anywhere along this spectrum. If you have any doubts at all, you must score under 0.5. Above 0.5 means you have no doubts and no critical findings. Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}\n\nBundle snapshot:\n{}",
         proposal.proposal_id,
         proposal.description,
         proposal.action,
@@ -768,7 +768,6 @@ mod tests {
         CompositeLlm::from_config(&LlmConfig {
             openai: disabled_provider(),
             anthropic: disabled_provider(),
-            opencode: disabled_provider(),
         })
     }
 

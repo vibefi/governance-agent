@@ -1,0 +1,128 @@
+{
+  "name": "Uniswap V2",
+  "version": "0.0.2",
+  "description": "Gov agent e2e test dapp",
+  "createdAt": "2026-02-22T20:42:37.354Z",
+  "layout": "constrained",
+  "capabilities": {
+    "ipfs": {
+      "allow": []
+    }
+  },
+  "constraints": {
+    "type": "default",
+    "allowedDependencies": {
+      "react": "19.2.4",
+      "react-dom": "19.2.4",
+      "wagmi": "3.4.1",
+      "viem": "2.45.0",
+      "shadcn": "3.7.0",
+      "@tanstack/react-query": "5.90.20"
+    },
+    "allowedDevDependencies": {
+      "@vitejs/plugin-react": "5.1.2",
+      "@types/react": "19.2.4",
+      "typescript": "5.9.3",
+      "vite": "7.2.4"
+    }
+  },
+  "entry": "index.html",
+  "files": [
+    {
+      "path": "abis/ERC20.json",
+      "bytes": 1500
+    },
+    {
+      "path": "abis/UniswapV2Factory.json",
+      "bytes": 339
+    },
+    {
+      "path": "abis/UniswapV2Pair.json",
+      "bytes": 734
+    },
+    {
+      "path": "abis/UniswapV2Router02.json",
+      "bytes": 2352
+    },
+    {
+      "path": "assets/logo.webp",
+      "bytes": 36630
+    },
+    {
+      "path": "index.html",
+      "bytes": 417
+    },
+    {
+      "path": "src/abis.ts",
+      "bytes": 319
+    },
+    {
+      "path": "src/addresses.ts",
+      "bytes": 1304
+    },
+    {
+      "path": "src/app.css",
+      "bytes": 8505
+    },
+    {
+      "path": "src/App.tsx",
+      "bytes": 21318
+    },
+    {
+      "path": "src/components/Button.tsx",
+      "bytes": 352
+    },
+    {
+      "path": "src/components/Card.tsx",
+      "bytes": 560
+    },
+    {
+      "path": "src/components/Field.tsx",
+      "bytes": 494
+    },
+    {
+      "path": "src/components/Toast.tsx",
+      "bytes": 519
+    },
+    {
+      "path": "src/env.ts",
+      "bytes": 299
+    },
+    {
+      "path": "src/hooks/useAllowance.ts",
+      "bytes": 715
+    },
+    {
+      "path": "src/hooks/useErc20Balance.ts",
+      "bytes": 658
+    },
+    {
+      "path": "src/hooks/useEthBalance.ts",
+      "bytes": 290
+    },
+    {
+      "path": "src/hooks/useQuote.ts",
+      "bytes": 1733
+    },
+    {
+      "path": "src/hooks/useTokenMeta.ts",
+      "bytes": 2252
+    },
+    {
+      "path": "src/main.tsx",
+      "bytes": 567
+    },
+    {
+      "path": "src/utils.ts",
+      "bytes": 777
+    },
+    {
+      "path": "src/wagmi.ts",
+      "bytes": 576
+    },
+    {
+      "path": "vibefi.json",
+      "bytes": 545
+    }
+  ]
+}

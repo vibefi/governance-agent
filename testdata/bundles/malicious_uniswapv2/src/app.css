@@ -1,0 +1,508 @@
+/* ─── Base ─── */
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+/* ─── App root ─── */
+.appRoot {
+  min-height: 100vh;
+  background:
+    radial-gradient(600px 400px at 50% 0%, rgba(255,0,122,0.12), transparent 70%),
+    radial-gradient(800px 600px at 50% 0%, rgba(255,0,122,0.06), transparent),
+    #0b0b10;
+  color: white;
+  font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+}
+
+.contentWrap {
+  max-width: 480px;
+  margin: 0 auto;
+  padding: 0 16px;
+}
+
+.contentArea {
+  padding-top: 48px;
+}
+
+.contractsFooterWrap {
+  margin-top: 16px;
+  padding: 12px 4px;
+}
+
+/* ─── Header ─── */
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 0;
+}
+
+.headerLeft {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.headerLogo {
+  border-radius: 10px;
+}
+
+.headerTitle {
+  font-weight: 700;
+  font-size: 15px;
+}
+
+.headerRight {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+/* ─── Account badge ─── */
+.accountBadge {
+  display: flex;
+  align-items: center;
+  border-radius: 20px;
+  border: 1px solid rgba(255,255,255,0.10);
+  background: rgba(255,255,255,0.04);
+  overflow: hidden;
+}
+
+.accountBalance {
+  padding: 7px 10px;
+  font-size: 13px;
+  opacity: 0.85;
+}
+
+.accountAddress {
+  padding: 7px 12px;
+  font-size: 13px;
+  background: rgba(255,255,255,0.06);
+  border-left: 1px solid rgba(255,255,255,0.08);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chainDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.chainDot.supported { background: #27AE60; }
+.chainDot.other { background: #E67E22; }
+
+/* ─── Swap card interior ─── */
+.swapHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.swapTitle {
+  font-weight: 700;
+  font-size: 18px;
+}
+
+/* ─── Slippage ─── */
+.slippageBtn {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 12px;
+  padding: 4px 10px;
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-family: inherit;
+}
+
+.slippagePanel {
+  background: rgba(255,255,255,0.04);
+  border-radius: 12px;
+  padding: 10px 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.slippageLabel {
+  font-size: 13px;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.slippageInput {
+  max-width: 80px;
+}
+
+.slippageHint {
+  font-size: 12px;
+  opacity: 0.5;
+}
+
+/* ─── Tabs ─── */
+.tabRow {
+  display: flex;
+  gap: 4px;
+  background: rgba(255,255,255,0.04);
+  border-radius: 20px;
+  padding: 4px;
+}
+
+.tabPill {
+  flex: 1;
+  padding: 8px 0;
+  border-radius: 16px;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 14px;
+  background: transparent;
+  color: rgba(255,255,255,0.5);
+  transition: background 0.15s, color 0.15s;
+  font-family: inherit;
+}
+
+.tabPill.active {
+  background: rgba(255,0,122,0.15);
+  color: #FF007A;
+}
+
+/* ─── Network warning ─── */
+.networkWarn {
+  padding: 12px;
+  border-radius: 12px;
+  background: rgba(255,220,120,0.12);
+  border: 1px solid rgba(255,220,120,0.25);
+  font-size: 13px;
+}
+
+/* ─── Swap arrow ─── */
+.swapArrowWrap {
+  display: flex;
+  justify-content: center;
+  margin: -10px 0;
+  position: relative;
+  z-index: 2;
+}
+
+.swapArrowBtn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 3px solid #1a1a24;
+  background: rgba(255,255,255,0.06);
+  color: rgba(255,255,255,0.7);
+  cursor: pointer;
+  font-size: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+  font-family: inherit;
+}
+
+/* ─── Input panels ─── */
+.inputPanel {
+  background: rgba(255,255,255,0.04);
+  border-radius: 16px;
+  padding: 12px 14px;
+  display: grid;
+  gap: 8px;
+}
+
+.inputPanelLabel {
+  font-size: 13px;
+  color: rgba(255,255,255,0.5);
+  font-weight: 500;
+}
+
+/* ─── Inputs ─── */
+.input {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255,255,255,0.15);
+  background: rgba(255,255,255,0.06);
+  color: white;
+  outline: none;
+  width: 100%;
+  font-family: inherit;
+  box-sizing: border-box;
+  font-size: 13px;
+}
+
+.amountInput {
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  background: rgba(255,255,255,0.04);
+  color: white;
+  outline: none;
+  width: 100%;
+  font-family: inherit;
+  box-sizing: border-box;
+  font-size: 24px;
+  font-weight: 500;
+}
+
+.amountDisplay {
+  font-size: 24px;
+  font-weight: 500;
+  color: rgba(255,255,255,0.6);
+  padding: 4px 0;
+}
+
+/* ─── Token label ─── */
+.tokenLabel {
+  font-size: 13px;
+  opacity: 0.5;
+}
+
+/* ─── Balance hint ─── */
+.balanceHint {
+  font-size: 12px;
+  opacity: 0.45;
+}
+
+/* ─── Token error ─── */
+.tokenError {
+  color: #ff6b6b;
+  font-size: 12px;
+}
+
+/* ─── Quote info ─── */
+.quoteInfo {
+  margin-top: 12px;
+  display: grid;
+  gap: 4px;
+  border-top: 1px solid rgba(255,255,255,0.06);
+  padding-top: 10px;
+}
+
+.quoteRow {
+  display: flex;
+  justify-content: space-between;
+  font-size: 13px;
+  color: rgba(255,255,255,0.7);
+}
+
+.quoteRow.muted {
+  color: rgba(255,255,255,0.45);
+}
+
+.quoteError {
+  margin-top: 8px;
+  color: #ff6b6b;
+  font-size: 13px;
+}
+
+/* ─── Approval box ─── */
+.approvalBox {
+  margin-top: 10px;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: rgba(255,220,120,0.08);
+  border: 1px solid rgba(255,220,120,0.15);
+  display: grid;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.approvalBoxHint {
+  font-size: 11px;
+  opacity: 0.5;
+}
+
+/* ─── Swap action ─── */
+.swapAction {
+  margin-top: 14px;
+}
+
+/* ─── Swap panel ─── */
+.swapPanel {
+  display: grid;
+  gap: 0;
+}
+
+/* ─── Contracts footer ─── */
+.contractsFooter {
+  text-align: center;
+}
+
+.contractsToggleBtn {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,0.3);
+  cursor: pointer;
+  font-size: 12px;
+  font-family: inherit;
+}
+
+.contractsList {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(255,255,255,0.35);
+  display: grid;
+  gap: 4px;
+}
+
+.contractsDisclaimer {
+  opacity: 0.7;
+}
+
+/* ─── Button ─── */
+.btn {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255,255,255,0.12);
+  cursor: pointer;
+  font-weight: 600;
+  font-size: inherit;
+  background: rgba(255,0,122,0.14);
+  color: white;
+  transition: background 0.15s, opacity 0.15s;
+  font-family: inherit;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn.ghost {
+  background: transparent;
+}
+
+.btn.cta {
+  padding: 16px 20px;
+  border-radius: 18px;
+  border: none;
+  font-weight: 700;
+  font-size: 16px;
+  width: 100%;
+  background: #FF007A;
+  cursor: pointer;
+  opacity: 1;
+}
+
+.btn.cta:disabled {
+  background: rgba(255,255,255,0.08);
+  color: rgba(255,255,255,0.35);
+  cursor: not-allowed;
+  opacity: 1;
+}
+
+.btn.sm {
+  font-size: 13px;
+  padding: 8px 14px;
+}
+
+.btn.pill {
+  border-radius: 20px;
+  padding: 8px 16px;
+  font-size: 14px;
+}
+
+/* ─── Card ─── */
+.card {
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 16px;
+  padding: 20px;
+  background: rgba(255,255,255,0.05);
+  box-shadow: 0 4px 24px rgba(0,0,0,0.25), 0 0 60px rgba(255,0,122,0.04);
+  display: grid;
+  gap: 12px;
+}
+
+.card.compact {
+  padding: 12px;
+  gap: 8px;
+}
+
+.card.noBorder {
+  border: none;
+  border-radius: 0;
+  padding: 8px 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.cardTitle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.cardTitleText {
+  font-weight: 700;
+}
+
+/* ─── Field ─── */
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.fieldHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.fieldLabel {
+  font-weight: 600;
+}
+
+.fieldHint {
+  opacity: 0.75;
+  font-size: 12px;
+}
+
+.fieldError {
+  color: #ff6b6b;
+  font-size: 12px;
+}
+
+/* ─── Toast ─── */
+.toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  max-width: 560px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.14);
+  background: rgba(20,20,26,0.9);
+  backdrop-filter: blur(8px);
+  color: white;
+}
+
+.toastInner {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.toastText {
+  flex: 1;
+  white-space: pre-wrap;
+}
+
+.toastClose {
+  background: transparent;
+  border: none;
+  color: white;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  opacity: 0.8;
+}

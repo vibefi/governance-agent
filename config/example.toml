@@ -45,19 +45,13 @@ llm_weight = 0.30
 enabled = true
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
-model = "gpt-4.1-mini"
+model = "gpt-5-nano"
 
 [llm.anthropic]
 enabled = true
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
-model = "claude-3-5-sonnet-latest"
-
-[llm.opencode]
-enabled = true
-base_url = "http://127.0.0.1:4096/v1"
-api_key_env = "OPENCODE_API_KEY"
-model = "default"
+model = "claude-haiku-4-5"
 
 [notifications.telegram]
 enabled = false
