@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 
 use anyhow::Result;
 use chrono::Utc;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    config::ReviewConfig,
+    config::{DecisionConfig, ReviewConfig},
     ipfs::{BundleFetcher, Manifest},
     llm::{CompositeLlm, LlmContext, redact_secrets},
     types::{DecodedAction, Finding, LlmAudit, Proposal, ReviewResult, Severity},
@@ -20,6 +21,7 @@ const MAX_BUNDLE_CONTENT_FETCHES: usize = 120;
 pub async fn review_proposal(
     proposal: &Proposal,
     config: &ReviewConfig,
+    decision_config: &DecisionConfig,
     bundle_fetcher: &BundleFetcher,
     llm: &CompositeLlm,
     prompt_override: Option<&str>,
@@ -88,7 +90,11 @@ pub async fn review_proposal(
         None
     };
 
-    let llm_output = build_llm_summary(
+    score = score.clamp(0.0, 1.0);
+    let deterministic_score = score;
+    let (deterministic_weight, llm_weight) = decision_config.resolved_blend_weights();
+
+    let llm_output = build_llm_confidence(
         proposal,
         manifest.as_ref(),
         bundle_snapshot.as_deref(),
@@ -97,14 +103,16 @@ pub async fn review_proposal(
         &llm_context,
     )
     .await;
-    if llm_output.is_some() {
-        score += 0.05;
+    if let Some((llm_confidence, _)) = &llm_output {
+        score = (deterministic_weight * deterministic_score) + (llm_weight * llm_confidence);
+    } else {
+        score = deterministic_score;
     }
 
     score = score.clamp(0.0, 1.0);
 
-    let (llm_summary, llm_audit) = match llm_output {
-        Some((summary, audit)) => (Some(summary), Some(audit)),
+    let (llm_confidence, llm_audit) = match llm_output {
+        Some((confidence, audit)) => (Some(confidence), Some(audit)),
         None => (None, None),
     };
 
@@ -112,7 +120,10 @@ pub async fn review_proposal(
         proposal_id: proposal.proposal_id.clone(),
         root_cid,
         findings,
-        llm_summary,
+        deterministic_score: Some(deterministic_score),
+        deterministic_weight: Some(deterministic_weight),
+        llm_weight: Some(llm_weight),
+        llm_confidence,
         llm_audit,
         score,
         reviewed_at: Utc::now(),
@@ -293,20 +304,19 @@ fn analyze_package_json(
     }
 }
 
-async fn build_llm_summary(
+async fn build_llm_confidence(
     proposal: &Proposal,
     manifest: Option<&Manifest>,
     bundle_snapshot: Option<&str>,
     llm: &CompositeLlm,
     prompt_override: Option<&str>,
     llm_context: &[String],
-) -> Option<(String, LlmAudit)> {
+) -> Option<(f32, LlmAudit)> {
+    let base_prompt = review_prompt(proposal, manifest, bundle_snapshot, llm_context);
+    let response_contract = "Return ONLY JSON in this exact shape: {\"confidence\": <number between 0.0 and 1.0>}. Do not include markdown or any extra keys.";
     let prompt = match prompt_override {
-        Some(custom) => format!(
-            "{custom}\n\n{}",
-            review_prompt(proposal, manifest, bundle_snapshot, llm_context)
-        ),
-        None => review_prompt(proposal, manifest, bundle_snapshot, llm_context),
+        Some(custom) => format!("{custom}\n\n{response_contract}\n\n{base_prompt}"),
+        None => format!("{response_contract}\n\n{base_prompt}"),
     };
 
     let prompt_preview = preview_chars(&prompt, 500);
@@ -322,36 +332,39 @@ async fn build_llm_summary(
         "review stage prepared full LLM prompt"
     );
 
-    llm.analyze_best_effort(&LlmContext {
-        prompt: prompt.clone(),
-    })
-    .await
-    .map(|resp| {
-        let response_preview = preview_chars(&resp.text, 500);
-        tracing::debug!(
-            proposal_id = %proposal.proposal_id,
-            provider = %resp.provider,
-            model = %resp.model,
-            response_preview = %response_preview,
-            response_len = resp.text.len(),
-            "review stage received LLM response preview"
-        );
-        tracing::trace!(
-            proposal_id = %proposal.proposal_id,
-            provider = %resp.provider,
-            model = %resp.model,
-            response = %resp.text,
-            "review stage received full LLM response"
-        );
-        let summary = format!("[{}:{}] {}", resp.provider, resp.model, resp.text);
-        let audit = LlmAudit {
-            provider: resp.provider,
-            model: resp.model,
-            prompt_redacted: redact_secrets(&prompt),
-            response_redacted: redact_secrets(&resp.text),
-        };
-        (summary, audit)
-    })
+    let response = llm
+        .analyze_best_effort(&LlmContext {
+            prompt: prompt.clone(),
+        })
+        .await?;
+
+    let response_preview = preview_chars(&response.text, 500);
+    tracing::debug!(
+        proposal_id = %proposal.proposal_id,
+        provider = %response.provider,
+        model = %response.model,
+        response_preview = %response_preview,
+        response_len = response.text.len(),
+        "review stage received LLM response preview"
+    );
+    tracing::trace!(
+        proposal_id = %proposal.proposal_id,
+        provider = %response.provider,
+        model = %response.model,
+        response = %response.text,
+        "review stage received full LLM response"
+    );
+
+    let llm_confidence = parse_llm_confidence(&response.text)?;
+
+    let audit = LlmAudit {
+        provider: response.provider,
+        model: response.model,
+        prompt_redacted: redact_secrets(&prompt),
+        response_redacted: redact_secrets(&response.text),
+    };
+
+    Some((llm_confidence, audit))
 }
 
 fn review_prompt(
@@ -432,6 +445,35 @@ fn detect_suspicious_tokens(source: &str) -> Vec<&'static str> {
     .filter(|needle| source.contains(**needle))
     .copied()
     .collect()
+}
+
+#[derive(Debug, Deserialize)]
+struct ConfidencePayload {
+    confidence: f32,
+}
+
+fn parse_llm_confidence(raw: &str) -> Option<f32> {
+    let parsed = serde_json::from_str::<ConfidencePayload>(raw).ok();
+    let confidence = match parsed {
+        Some(value) => value.confidence,
+        None => {
+            let wrapped = serde_json::from_str::<Value>(raw)
+                .ok()
+                .and_then(|value| value.get("confidence").cloned())
+                .and_then(|value| serde_json::from_value::<f32>(value).ok());
+            wrapped?
+        }
+    };
+
+    if !(0.0..=1.0).contains(&confidence) {
+        tracing::warn!(
+            confidence,
+            "llm returned out-of-range confidence; ignoring value"
+        );
+        return None;
+    }
+
+    Some(confidence)
 }
 
 fn preview_chars(text: &str, max_chars: usize) -> String {
@@ -529,6 +571,8 @@ async fn build_bundle_snapshot(
 mod tests {
     use std::fs;
 
+    use serde_json::json;
+
     use crate::{
         config::IpfsConfig,
         ipfs::{BundleFetcher, Manifest, ManifestFile},
@@ -536,7 +580,7 @@ mod tests {
 
     use super::{
         build_bundle_snapshot, contains_suspicious_script_cmd, detect_suspicious_tokens,
-        preview_chars,
+        parse_llm_confidence, preview_chars,
     };
 
     #[test]
@@ -565,6 +609,18 @@ mod tests {
     fn preview_chars_returns_full_text_when_short() {
         let preview = preview_chars("abc", 10);
         assert_eq!(preview, "abc");
+    }
+
+    #[test]
+    fn parse_llm_confidence_accepts_valid_json_payload() {
+        let confidence = parse_llm_confidence(&json!({ "confidence": 0.72 }).to_string());
+        assert_eq!(confidence, Some(0.72));
+    }
+
+    #[test]
+    fn parse_llm_confidence_rejects_out_of_range_values() {
+        let confidence = parse_llm_confidence(&json!({ "confidence": 1.7 }).to_string());
+        assert!(confidence.is_none());
     }
 
     #[tokio::test]

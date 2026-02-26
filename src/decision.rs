@@ -55,9 +55,26 @@ pub fn decide(config: &DecisionConfig, review: &ReviewResult) -> Decision {
         )
     };
 
-    if let Some(summary) = &review.llm_summary {
-        reasons.push(format!("llm summary: {summary}"));
+    if let Some(confidence) = review.llm_confidence {
+        reasons.push(format!("llm confidence: {:.2}", confidence));
     }
+    let deterministic_weight = review.deterministic_weight.unwrap_or(0.70);
+    let llm_weight = review.llm_weight.unwrap_or(0.30);
+    let deterministic_score = review.deterministic_score.unwrap_or(review.score);
+    match review.llm_confidence {
+        Some(llm_confidence) => reasons.push(format!(
+            "blended score = {:.2}*{:.2} + {:.2}*{:.2} = {:.2}",
+            deterministic_weight, deterministic_score, llm_weight, llm_confidence, review.score
+        )),
+        None => reasons.push(format!(
+            "llm confidence unavailable; using deterministic score {:.2}",
+            deterministic_score
+        )),
+    }
+    reasons.push(format!(
+        "decision thresholds: reject <= {:.2}, approve >= {:.2}",
+        reject_max, approve_min
+    ));
 
     Decision {
         proposal_id: review.proposal_id.clone(),
@@ -86,7 +103,10 @@ mod tests {
             proposal_id: "1".to_string(),
             root_cid: Some("bafy...".to_string()),
             findings,
-            llm_summary: None,
+            deterministic_score: Some(score),
+            deterministic_weight: Some(0.70),
+            llm_weight: Some(0.30),
+            llm_confidence: None,
             llm_audit: None,
             score,
             reviewed_at: Utc::now(),
@@ -98,13 +118,15 @@ mod tests {
             profile: Some(ConfidenceProfile::Conservative),
             approve_threshold: None,
             reject_threshold: None,
+            deterministic_weight: Some(0.70),
+            llm_weight: Some(0.30),
         }
     }
 
     #[test]
-    fn conservative_abstains_in_middle_band() {
+    fn conservative_approves_at_point_eight() {
         let decision = decide(&conservative_cfg(), &review(0.8, vec![]));
-        assert_eq!(decision.vote, VoteChoice::Abstain);
+        assert_eq!(decision.vote, VoteChoice::For);
     }
 
     #[test]
@@ -114,6 +136,8 @@ mod tests {
                 profile: Some(ConfidenceProfile::Aggressive),
                 approve_threshold: None,
                 reject_threshold: None,
+                deterministic_weight: Some(0.70),
+                llm_weight: Some(0.30),
             },
             &review(
                 0.95,
