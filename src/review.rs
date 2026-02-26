@@ -309,11 +309,40 @@ async fn build_llm_summary(
         None => review_prompt(proposal, manifest, bundle_snapshot, llm_context),
     };
 
+    let prompt_preview = preview_chars(&prompt, 500);
+    tracing::debug!(
+        proposal_id = %proposal.proposal_id,
+        prompt_preview = %prompt_preview,
+        prompt_len = prompt.len(),
+        "review stage prepared LLM prompt preview"
+    );
+    tracing::trace!(
+        proposal_id = %proposal.proposal_id,
+        prompt = %prompt,
+        "review stage prepared full LLM prompt"
+    );
+
     llm.analyze_best_effort(&LlmContext {
         prompt: prompt.clone(),
     })
     .await
     .map(|resp| {
+        let response_preview = preview_chars(&resp.text, 500);
+        tracing::debug!(
+            proposal_id = %proposal.proposal_id,
+            provider = %resp.provider,
+            model = %resp.model,
+            response_preview = %response_preview,
+            response_len = resp.text.len(),
+            "review stage received LLM response preview"
+        );
+        tracing::trace!(
+            proposal_id = %proposal.proposal_id,
+            provider = %resp.provider,
+            model = %resp.model,
+            response = %resp.text,
+            "review stage received full LLM response"
+        );
         let summary = format!("[{}:{}] {}", resp.provider, resp.model, resp.text);
         let audit = LlmAudit {
             provider: resp.provider,
@@ -403,6 +432,16 @@ fn detect_suspicious_tokens(source: &str) -> Vec<&'static str> {
     .filter(|needle| source.contains(**needle))
     .copied()
     .collect()
+}
+
+fn preview_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let preview = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}...[truncated]")
+    } else {
+        preview
+    }
 }
 
 async fn build_bundle_snapshot(
@@ -495,7 +534,10 @@ mod tests {
         ipfs::{BundleFetcher, Manifest, ManifestFile},
     };
 
-    use super::{build_bundle_snapshot, contains_suspicious_script_cmd, detect_suspicious_tokens};
+    use super::{
+        build_bundle_snapshot, contains_suspicious_script_cmd, detect_suspicious_tokens,
+        preview_chars,
+    };
 
     #[test]
     fn script_detection_flags_network_shell_commands() {
@@ -511,6 +553,18 @@ mod tests {
         let hits = detect_suspicious_tokens(src);
         assert!(hits.contains(&"child_process"));
         assert!(hits.contains(&"eval("));
+    }
+
+    #[test]
+    fn preview_chars_appends_truncated_marker_when_needed() {
+        let preview = preview_chars("abcdef", 3);
+        assert_eq!(preview, "abc...[truncated]");
+    }
+
+    #[test]
+    fn preview_chars_returns_full_text_when_short() {
+        let preview = preview_chars("abc", 10);
+        assert_eq!(preview, "abc");
     }
 
     #[tokio::test]
