@@ -391,7 +391,7 @@ fn review_prompt(
     let bundle_section = bundle_snapshot.unwrap_or("Bundle snapshot unavailable.");
 
     format!(
-        "Return ONLY JSON in this exact shape: {{\"score\": <number between 0.0 and 1.0>}}. Do not include markdown or any extra keys.\n\nReview this governance proposal and provide a score between 0.0-1.0 (0.0 = unsafe/unsecure proposal and 1.0 = safe/secure proposal). Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}\n\nBundle snapshot:\n{}",
+        "Return ONLY JSON in this exact shape: {{\"score\": <number between 0.0 and 1.0>}}. Do not include markdown or any extra keys.\n\nReview this governance proposal and provide a score on the scale 0.0-1.0, where 0.0 = an unsafe or unsecure proposal, 0.5 = a neutral proposal, and 1.0 = a perfectly safe and secure proposal. You can provide values in between 0.0-1.0 depending on your confidence. Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}\n\nBundle snapshot:\n{}",
         proposal.proposal_id,
         proposal.description,
         proposal.action,
