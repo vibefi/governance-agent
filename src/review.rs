@@ -94,7 +94,7 @@ pub async fn review_proposal(
     let deterministic_score = score;
     let (deterministic_weight, llm_weight) = decision_config.resolved_blend_weights();
 
-    let llm_output = build_llm_confidence(
+    let llm_output = build_llm_score(
         proposal,
         manifest.as_ref(),
         bundle_snapshot.as_deref(),
@@ -103,16 +103,16 @@ pub async fn review_proposal(
         &llm_context,
     )
     .await;
-    if let Some((llm_confidence, _)) = &llm_output {
-        score = (deterministic_weight * deterministic_score) + (llm_weight * llm_confidence);
+    if let Some((llm_score, _)) = &llm_output {
+        score = (deterministic_weight * deterministic_score) + (llm_weight * llm_score);
     } else {
         score = deterministic_score;
     }
 
     score = score.clamp(0.0, 1.0);
 
-    let (llm_confidence, llm_audit) = match llm_output {
-        Some((confidence, audit)) => (Some(confidence), Some(audit)),
+    let (llm_score, llm_audit) = match llm_output {
+        Some((score, audit)) => (Some(score), Some(audit)),
         None => (None, None),
     };
 
@@ -123,7 +123,7 @@ pub async fn review_proposal(
         deterministic_score: Some(deterministic_score),
         deterministic_weight: Some(deterministic_weight),
         llm_weight: Some(llm_weight),
-        llm_confidence,
+        llm_score,
         llm_audit,
         score,
         reviewed_at: Utc::now(),
@@ -304,7 +304,7 @@ fn analyze_package_json(
     }
 }
 
-async fn build_llm_confidence(
+async fn build_llm_score(
     proposal: &Proposal,
     manifest: Option<&Manifest>,
     bundle_snapshot: Option<&str>,
@@ -313,10 +313,9 @@ async fn build_llm_confidence(
     llm_context: &[String],
 ) -> Option<(f32, LlmAudit)> {
     let base_prompt = review_prompt(proposal, manifest, bundle_snapshot, llm_context);
-    let response_contract = "Return ONLY JSON in this exact shape: {\"confidence\": <number between 0.0 and 1.0>}. Do not include markdown or any extra keys.";
     let prompt = match prompt_override {
-        Some(custom) => format!("{custom}\n\n{response_contract}\n\n{base_prompt}"),
-        None => format!("{response_contract}\n\n{base_prompt}"),
+        Some(custom) => format!("{custom}\n\n{base_prompt}"),
+        None => format!("{base_prompt}"),
     };
 
     let prompt_preview = preview_chars(&prompt, 500);
@@ -355,7 +354,7 @@ async fn build_llm_confidence(
         "review stage received full LLM response"
     );
 
-    let llm_confidence = parse_llm_confidence(&response.text)?;
+    let llm_score = parse_llm_score(&response.text)?;
 
     let audit = LlmAudit {
         provider: response.provider,
@@ -364,7 +363,7 @@ async fn build_llm_confidence(
         response_redacted: redact_secrets(&response.text),
     };
 
-    Some((llm_confidence, audit))
+    Some((llm_score, audit))
 }
 
 fn review_prompt(
@@ -392,7 +391,7 @@ fn review_prompt(
     let bundle_section = bundle_snapshot.unwrap_or("Bundle snapshot unavailable.");
 
     format!(
-        "Review this governance proposal and provide risk summary. Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}\n\nBundle snapshot:\n{}",
+        "Return ONLY JSON in this exact shape: {{\"score\": <number between 0.0 and 1.0>}}. Do not include markdown or any extra keys.\n\nReview this governance proposal and provide a score between 0.0-1.0 (0.0 = unsafe/unsecure proposal and 1.0 = safe/secure proposal). Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}\n\nBundle snapshot:\n{}",
         proposal.proposal_id,
         proposal.description,
         proposal.action,
@@ -448,32 +447,29 @@ fn detect_suspicious_tokens(source: &str) -> Vec<&'static str> {
 }
 
 #[derive(Debug, Deserialize)]
-struct ConfidencePayload {
-    confidence: f32,
+struct ScorePayload {
+    score: f32,
 }
 
-fn parse_llm_confidence(raw: &str) -> Option<f32> {
-    let parsed = serde_json::from_str::<ConfidencePayload>(raw).ok();
-    let confidence = match parsed {
-        Some(value) => value.confidence,
+fn parse_llm_score(raw: &str) -> Option<f32> {
+    let parsed = serde_json::from_str::<ScorePayload>(raw).ok();
+    let score = match parsed {
+        Some(value) => value.score,
         None => {
             let wrapped = serde_json::from_str::<Value>(raw)
                 .ok()
-                .and_then(|value| value.get("confidence").cloned())
+                .and_then(|value| value.get("score").cloned())
                 .and_then(|value| serde_json::from_value::<f32>(value).ok());
             wrapped?
         }
     };
 
-    if !(0.0..=1.0).contains(&confidence) {
-        tracing::warn!(
-            confidence,
-            "llm returned out-of-range confidence; ignoring value"
-        );
+    if !(0.0..=1.0).contains(&score) {
+        tracing::warn!(score, "llm returned out-of-range score; ignoring value");
         return None;
     }
 
-    Some(confidence)
+    Some(score)
 }
 
 fn preview_chars(text: &str, max_chars: usize) -> String {
@@ -569,18 +565,21 @@ async fn build_bundle_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, path::PathBuf};
 
+    use chrono::Utc;
     use serde_json::json;
 
     use crate::{
-        config::IpfsConfig,
+        config::{DecisionConfig, IpfsConfig, LlmConfig, ProviderConfig, ReviewConfig},
         ipfs::{BundleFetcher, Manifest, ManifestFile},
+        llm::CompositeLlm,
+        types::{DecodedAction, Proposal},
     };
 
     use super::{
         build_bundle_snapshot, contains_suspicious_script_cmd, detect_suspicious_tokens,
-        parse_llm_confidence, preview_chars,
+        preview_chars, review_proposal,
     };
 
     #[test]
@@ -612,15 +611,21 @@ mod tests {
     }
 
     #[test]
-    fn parse_llm_confidence_accepts_valid_json_payload() {
-        let confidence = parse_llm_confidence(&json!({ "confidence": 0.72 }).to_string());
-        assert_eq!(confidence, Some(0.72));
+    fn parse_llm_score_accepts_valid_json_payload() {
+        let score = super::parse_llm_score(&json!({ "score": 0.72 }).to_string());
+        assert_eq!(score, Some(0.72));
     }
 
     #[test]
-    fn parse_llm_confidence_rejects_out_of_range_values() {
-        let confidence = parse_llm_confidence(&json!({ "confidence": 1.7 }).to_string());
-        assert!(confidence.is_none());
+    fn parse_llm_score_rejects_out_of_range_values() {
+        let score = super::parse_llm_score(&json!({ "score": 1.7 }).to_string());
+        assert!(score.is_none());
+    }
+
+    #[test]
+    fn parse_llm_score_accepts_low_value_payload() {
+        let score = super::parse_llm_score(&json!({ "score": 0.05 }).to_string());
+        assert_eq!(score, Some(0.05));
     }
 
     #[tokio::test]
@@ -668,5 +673,142 @@ mod tests {
         assert!(snapshot.contains("export const x = 1;"));
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn red_team_fixture_produces_risky_findings_and_low_score_without_llm() {
+        let fixture_dir = red_team_fixture_dir();
+        let root_cid = "bafy-red-team-fixture";
+        let cache_root = temp_cache_root("gov-agent-red-team-review");
+        let cid_dir = cache_root.join(root_cid);
+        fs::create_dir_all(&cid_dir).expect("create cache cid dir");
+        copy_dir_recursive(&fixture_dir, &cid_dir).expect("copy fixture into cache");
+
+        let fetcher = BundleFetcher::new(&IpfsConfig {
+            gateway_url: "http://127.0.0.1:1".to_string(),
+            request_timeout_secs: 1,
+            cache_dir: Some(cache_root.clone()),
+        })
+        .expect("build fetcher");
+
+        let proposal = Proposal {
+            proposal_id: "1".to_string(),
+            proposer: "0x0000000000000000000000000000000000000001".to_string(),
+            description: "red-team fixture".to_string(),
+            vote_start: 1,
+            vote_end: 100,
+            block_number: 1,
+            tx_hash: None,
+            targets: vec![],
+            values: vec![],
+            calldatas: vec![],
+            action: DecodedAction::PublishDapp {
+                root_cid: root_cid.to_string(),
+                name: "red-team-vapp".to_string(),
+                version: "0.0.1".to_string(),
+                description: "fixture".to_string(),
+            },
+            discovered_at: Utc::now(),
+        };
+
+        let review = review_proposal(
+            &proposal,
+            &ReviewConfig {
+                prompt_file: None,
+                max_bundle_bytes: 40 * 1024 * 1024,
+            },
+            &DecisionConfig {
+                profile: None,
+                approve_threshold: None,
+                reject_threshold: None,
+                deterministic_weight: Some(0.70),
+                llm_weight: Some(0.30),
+            },
+            &fetcher,
+            &disabled_llm(),
+            None,
+        )
+        .await
+        .expect("review proposal");
+
+        let messages = review
+            .findings
+            .iter()
+            .map(|finding| finding.message.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            messages
+                .iter()
+                .any(|msg| msg.contains("manifest contains suspicious path")),
+            "expected suspicious path finding, got {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|msg| {
+                msg.contains("package.json scripts contain potentially risky commands")
+            }),
+            "expected risky script finding, got {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|msg| msg.contains("source scan found potentially risky tokens")),
+            "expected risky source-token finding, got {messages:?}"
+        );
+        assert!(
+            review.score < 0.5,
+            "expected low review score for red-team fixture, got {}",
+            review.score
+        );
+        assert!(review.llm_score.is_none());
+
+        let _ = fs::remove_dir_all(&cache_root);
+    }
+
+    fn disabled_llm() -> CompositeLlm {
+        CompositeLlm::from_config(&LlmConfig {
+            openai: disabled_provider(),
+            anthropic: disabled_provider(),
+            opencode: disabled_provider(),
+        })
+    }
+
+    fn disabled_provider() -> ProviderConfig {
+        ProviderConfig {
+            enabled: false,
+            base_url: None,
+            api_key_env: None,
+            model: None,
+        }
+    }
+
+    fn red_team_fixture_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("bundles")
+            .join("red_team_vapp")
+    }
+
+    fn temp_cache_root(prefix: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("{}-{}", prefix, std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("create temp cache root");
+        path
+    }
+
+    fn copy_dir_recursive(from: &PathBuf, to: &PathBuf) -> std::io::Result<()> {
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let src = entry.path();
+            let dst = to.join(entry.file_name());
+
+            if file_type.is_dir() {
+                fs::create_dir_all(&dst)?;
+                copy_dir_recursive(&src, &dst)?;
+            } else if file_type.is_file() {
+                fs::copy(&src, &dst)?;
+            }
+        }
+        Ok(())
     }
 }

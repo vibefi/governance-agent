@@ -1,0 +1,26 @@
+{
+  "addresses": {
+    "1": {
+      "maliciousToken": "0x4bf5dc91e2555449293d7824028eb8fe5879b689"
+    }
+  },
+  "capabilities": {
+    "ipfs": {
+      "allow": [
+        {
+          "cid": "*",
+          "paths": [
+            "**"
+          ],
+          "as": [
+            "json",
+            "text",
+            "snippet",
+            "image"
+          ],
+          "maxBytes": 9999999
+        }
+      ]
+    }
+  }
+}

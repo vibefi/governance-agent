@@ -51,7 +51,7 @@ pub struct ReviewResult {
     pub deterministic_weight: Option<f32>,
     #[serde(default)]
     pub llm_weight: Option<f32>,
-    pub llm_confidence: Option<f32>,
+    pub llm_score: Option<f32>,
     pub llm_audit: Option<LlmAudit>,
     pub score: f32,
     pub reviewed_at: DateTime<Utc>,
