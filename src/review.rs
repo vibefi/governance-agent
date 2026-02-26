@@ -13,6 +13,9 @@ use crate::{
 
 const MAX_TEXT_FETCH_BYTES: usize = 24 * 1024;
 const MAX_SOURCE_FILES_FOR_SCAN: usize = 6;
+const MAX_BUNDLE_INDEX_BYTES: usize = 64 * 1024;
+const MAX_BUNDLE_CONTENT_BYTES: usize = 256 * 1024;
+const MAX_BUNDLE_CONTENT_FETCHES: usize = 120;
 
 pub async fn review_proposal(
     proposal: &Proposal,
@@ -75,9 +78,20 @@ pub async fn review_proposal(
         }
     }
 
+    let bundle_snapshot = if let (Some(cid), Some(m)) = (&root_cid, manifest.as_ref()) {
+        Some(
+            build_bundle_snapshot(bundle_fetcher, cid, m)
+                .await
+                .unwrap_or_else(|err| format!("Bundle snapshot unavailable: {err}")),
+        )
+    } else {
+        None
+    };
+
     let llm_output = build_llm_summary(
         proposal,
         manifest.as_ref(),
+        bundle_snapshot.as_deref(),
         llm,
         prompt_override,
         &llm_context,
@@ -282,6 +296,7 @@ fn analyze_package_json(
 async fn build_llm_summary(
     proposal: &Proposal,
     manifest: Option<&Manifest>,
+    bundle_snapshot: Option<&str>,
     llm: &CompositeLlm,
     prompt_override: Option<&str>,
     llm_context: &[String],
@@ -289,9 +304,9 @@ async fn build_llm_summary(
     let prompt = match prompt_override {
         Some(custom) => format!(
             "{custom}\n\n{}",
-            review_prompt(proposal, manifest, llm_context)
+            review_prompt(proposal, manifest, bundle_snapshot, llm_context)
         ),
-        None => review_prompt(proposal, manifest, llm_context),
+        None => review_prompt(proposal, manifest, bundle_snapshot, llm_context),
     };
 
     llm.analyze_best_effort(&LlmContext {
@@ -313,6 +328,7 @@ async fn build_llm_summary(
 fn review_prompt(
     proposal: &Proposal,
     manifest: Option<&Manifest>,
+    bundle_snapshot: Option<&str>,
     llm_context: &[String],
 ) -> String {
     let manifest_snippet = if let Some(m) = manifest {
@@ -331,9 +347,16 @@ fn review_prompt(
         llm_context.join("\n")
     };
 
+    let bundle_section = bundle_snapshot.unwrap_or("Bundle snapshot unavailable.");
+
     format!(
-        "Review this governance proposal and provide risk summary. Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}",
-        proposal.proposal_id, proposal.description, proposal.action, manifest_snippet, context
+        "Review this governance proposal and provide risk summary. Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}\n\nBundle snapshot:\n{}",
+        proposal.proposal_id,
+        proposal.description,
+        proposal.action,
+        manifest_snippet,
+        context,
+        bundle_section
     )
 }
 
@@ -382,9 +405,97 @@ fn detect_suspicious_tokens(source: &str) -> Vec<&'static str> {
     .collect()
 }
 
+async fn build_bundle_snapshot(
+    bundle_fetcher: &BundleFetcher,
+    root_cid: &str,
+    manifest: &Manifest,
+) -> Result<String> {
+    let files = manifest.files.clone().unwrap_or_default();
+    if files.is_empty() {
+        return Ok("Bundle file index: empty".to_string());
+    }
+
+    let mut index = String::new();
+    let mut indexed_count = 0usize;
+    for file in &files {
+        let line = format!("- {} ({} bytes)\n", file.path, file.bytes);
+        if index.len() + line.len() > MAX_BUNDLE_INDEX_BYTES {
+            break;
+        }
+        index.push_str(&line);
+        indexed_count += 1;
+    }
+    let truncated_index_count = files.len().saturating_sub(indexed_count);
+    if truncated_index_count > 0 {
+        index.push_str(&format!(
+            "... file index truncated: {} entries omitted ...\n",
+            truncated_index_count
+        ));
+    }
+
+    let mut content = String::new();
+    let mut included_contents = 0usize;
+    let mut omitted_non_text = 0usize;
+    let mut omitted_large = 0usize;
+    let mut fetch_budget_exhausted = false;
+
+    for file in files.iter().take(MAX_BUNDLE_CONTENT_FETCHES) {
+        if file.bytes as usize > MAX_TEXT_FETCH_BYTES {
+            omitted_large += 1;
+            continue;
+        }
+
+        match bundle_fetcher
+            .fetch_text_file(root_cid, &file.path, MAX_TEXT_FETCH_BYTES)
+            .await
+        {
+            Ok(Some(text)) => {
+                let section = format!(
+                    "\n--- file: {} ({} bytes) ---\n{}\n",
+                    file.path, file.bytes, text
+                );
+                if content.len() + section.len() > MAX_BUNDLE_CONTENT_BYTES {
+                    fetch_budget_exhausted = true;
+                    break;
+                }
+                content.push_str(&section);
+                included_contents += 1;
+            }
+            Ok(None) | Err(_) => {
+                omitted_non_text += 1;
+            }
+        }
+    }
+
+    let inspected = files.len().min(MAX_BUNDLE_CONTENT_FETCHES);
+    let skipped_by_fetch_cap = files.len().saturating_sub(inspected);
+
+    let summary = format!(
+        "Bundle summary: total_files={}, indexed_files={}, content_files_included={}, omitted_large_files={}, omitted_non_text_or_unavailable={}, fetch_cap_omitted={}, content_truncated={}",
+        files.len(),
+        indexed_count,
+        included_contents,
+        omitted_large,
+        omitted_non_text,
+        skipped_by_fetch_cap,
+        fetch_budget_exhausted
+    );
+
+    Ok(format!(
+        "{summary}\n\nBundle file index:\n{index}\nText file contents:\n{content}"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{contains_suspicious_script_cmd, detect_suspicious_tokens};
+    use std::fs;
+
+    use crate::{
+        config::IpfsConfig,
+        ipfs::{BundleFetcher, Manifest, ManifestFile},
+    };
+
+    use super::{build_bundle_snapshot, contains_suspicious_script_cmd, detect_suspicious_tokens};
 
     #[test]
     fn script_detection_flags_network_shell_commands() {
@@ -400,5 +511,52 @@ mod tests {
         let hits = detect_suspicious_tokens(src);
         assert!(hits.contains(&"child_process"));
         assert!(hits.contains(&"eval("));
+    }
+
+    #[tokio::test]
+    async fn bundle_snapshot_includes_index_and_cached_text_content() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("gov-agent-review-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("create temp cache dir");
+
+        let root_cid = "bafy-test-cid";
+        let cid_dir = temp_dir.join(root_cid);
+        fs::create_dir_all(cid_dir.join("src")).expect("create cid cache tree");
+        fs::write(
+            cid_dir.join("manifest.json"),
+            r#"{"name":"test","version":"1.0.0"}"#,
+        )
+        .expect("write cached manifest");
+        fs::write(cid_dir.join("src/app.ts"), "export const x = 1;\n").expect("write cached file");
+
+        let fetcher = BundleFetcher::new(&IpfsConfig {
+            gateway_url: "http://127.0.0.1:1".to_string(),
+            request_timeout_secs: 1,
+            cache_dir: Some(temp_dir.clone()),
+        })
+        .expect("build fetcher");
+
+        let manifest = Manifest {
+            name: Some("test".to_string()),
+            version: Some("1.0.0".to_string()),
+            description: None,
+            entry: None,
+            files: Some(vec![ManifestFile {
+                path: "src/app.ts".to_string(),
+                bytes: 20,
+            }]),
+        };
+
+        let snapshot = build_bundle_snapshot(&fetcher, root_cid, &manifest)
+            .await
+            .expect("build snapshot");
+
+        assert!(snapshot.contains("Bundle file index:"));
+        assert!(snapshot.contains("src/app.ts (20 bytes)"));
+        assert!(snapshot.contains("--- file: src/app.ts (20 bytes) ---"));
+        assert!(snapshot.contains("export const x = 1;"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 }

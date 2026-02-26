@@ -13,7 +13,8 @@ This repository includes a working foundation through vote execution:
 - Decoding of `DappRegistry.publishDapp` and `upgradeDapp` calldatas
 - Root CID extraction (UTF-8 first, hex fallback)
 - IPFS `manifest.json` fetch + shared CID cache (compatible with client cache layout)
-- Lightweight source/script checks and LLM context enrichment
+- Lightweight source/script checks and LLM context enrichment with bundle file index + text content snapshot
+- Graceful shutdown on Ctrl+C / SIGTERM for daemon mode
 - Decision engine with numeric thresholds and optional profile aliases
 - Keystore-backed vote submission (`castVoteWithReason`) with preflight checks, plus dry-run mode
 - LLM callouts for OpenAI, Anthropic, and OpenCode-compatible APIs with automatic provider fallback
