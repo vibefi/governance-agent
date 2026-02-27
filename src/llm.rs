@@ -8,7 +8,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::config::{LlmConfig, OllamaProviderConfig, ProviderConfig};
+use crate::config::{LlmConfig, ProviderConfig};
 
 static REDACTION_PATTERNS: Lazy<[Regex; 5]> = Lazy::new(|| {
     [
@@ -246,12 +246,12 @@ impl LlmProvider for AnthropicProvider {
 }
 
 struct OllamaProvider {
-    cfg: OllamaProviderConfig,
+    cfg: ProviderConfig,
     http: Client,
 }
 
 impl OllamaProvider {
-    fn new(cfg: &OllamaProviderConfig) -> Self {
+    fn new(cfg: &ProviderConfig) -> Self {
         Self {
             cfg: cfg.clone(),
             http: Client::new(),
@@ -276,8 +276,15 @@ impl LlmProvider for OllamaProvider {
             .model
             .clone()
             .unwrap_or_else(|| "llama3.2:3b".to_string());
+        let api_key = match self.cfg.api_key_env.as_deref() {
+            Some(key_var) => Some(
+                env::var(key_var)
+                    .map_err(|_| anyhow!("provider api key env var {key_var} is not set"))?,
+            ),
+            None => None,
+        };
 
-        let response = self
+        let mut request = self
             .http
             .post(format!("{}/api/generate", base_url.trim_end_matches('/')))
             .json(&json!({
@@ -287,9 +294,11 @@ impl LlmProvider for OllamaProvider {
                 "options": {
                     "temperature": 0.1
                 }
-            }))
-            .send()
-            .await?;
+            }));
+        if let Some(key) = api_key {
+            request = request.bearer_auth(key);
+        }
+        let response = request.send().await?;
 
         let status = response.status();
         let body: serde_json::Value = response.json().await?;
