@@ -68,6 +68,8 @@ pub struct DecisionConfig {
     pub profile: Option<ConfidenceProfile>,
     pub approve_threshold: Option<f32>,
     pub reject_threshold: Option<f32>,
+    pub deterministic_weight: Option<f32>,
+    pub llm_weight: Option<f32>,
 }
 
 impl DecisionConfig {
@@ -90,6 +92,27 @@ impl DecisionConfig {
 
         (approve, reject)
     }
+
+    pub fn resolved_blend_weights(&self) -> (f32, f32) {
+        let default_deterministic = 0.70;
+        let default_llm = 0.30;
+
+        let deterministic = self
+            .deterministic_weight
+            .filter(|value| (0.0..=1.0).contains(value))
+            .unwrap_or(default_deterministic);
+        let llm = self
+            .llm_weight
+            .filter(|value| (0.0..=1.0).contains(value))
+            .unwrap_or(default_llm);
+
+        let sum = deterministic + llm;
+        if sum <= f32::EPSILON {
+            return (default_deterministic, default_llm);
+        }
+
+        (deterministic / sum, llm / sum)
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -102,7 +125,7 @@ pub enum ConfidenceProfile {
 
 pub fn profile_thresholds(profile: ConfidenceProfile) -> (f32, f32) {
     match profile {
-        ConfidenceProfile::Conservative => (0.90, 0.30),
+        ConfidenceProfile::Conservative => (0.80, 0.30),
         ConfidenceProfile::Balanced => (0.75, 0.25),
         ConfidenceProfile::Aggressive => (0.60, 0.20),
     }
@@ -112,7 +135,6 @@ pub fn profile_thresholds(profile: ConfidenceProfile) -> (f32, f32) {
 pub struct LlmConfig {
     pub openai: ProviderConfig,
     pub anthropic: ProviderConfig,
-    pub opencode: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,6 +257,8 @@ impl AppConfig {
                 profile: Some(ConfidenceProfile::Conservative),
                 approve_threshold: None,
                 reject_threshold: None,
+                deterministic_weight: Some(0.70),
+                llm_weight: Some(0.30),
             },
             llm: LlmConfig::defaults(),
             notifications: NotificationConfig::defaults(),
@@ -272,6 +296,8 @@ impl AppConfig {
                 profile: Some(ConfidenceProfile::Conservative),
                 approve_threshold: None,
                 reject_threshold: None,
+                deterministic_weight: Some(0.70),
+                llm_weight: Some(0.30),
             },
             llm: LlmConfig::defaults(),
             notifications: NotificationConfig::defaults(),
@@ -379,6 +405,12 @@ impl AppConfig {
         }
         if let Ok(v) = env::var("GOV_AGENT_REJECT_THRESHOLD") {
             self.decision.reject_threshold = v.parse::<f32>().ok();
+        }
+        if let Ok(v) = env::var("GOV_AGENT_DETERMINISTIC_WEIGHT") {
+            self.decision.deterministic_weight = v.parse::<f32>().ok();
+        }
+        if let Ok(v) = env::var("GOV_AGENT_LLM_WEIGHT") {
+            self.decision.llm_weight = v.parse::<f32>().ok();
         }
         if let Ok(v) = env::var("GOV_AGENT_FROM_BLOCK")
             && let Ok(parsed) = v.parse::<u64>()
@@ -543,19 +575,13 @@ impl LlmConfig {
                 enabled: true,
                 base_url: Some("https://api.openai.com/v1".to_string()),
                 api_key_env: Some("OPENAI_API_KEY".to_string()),
-                model: Some("gpt-4.1-mini".to_string()),
+                model: Some("gpt-5-nano".to_string()),
             },
             anthropic: ProviderConfig {
                 enabled: true,
                 base_url: Some("https://api.anthropic.com/v1".to_string()),
                 api_key_env: Some("ANTHROPIC_API_KEY".to_string()),
-                model: Some("claude-3-5-sonnet-latest".to_string()),
-            },
-            opencode: ProviderConfig {
-                enabled: true,
-                base_url: Some("http://127.0.0.1:4096/v1".to_string()),
-                api_key_env: Some("OPENCODE_API_KEY".to_string()),
-                model: Some("default".to_string()),
+                model: Some("claude-haiku-4-5".to_string()),
             },
         }
     }
@@ -625,6 +651,8 @@ mod tests {
             profile: Some(ConfidenceProfile::Balanced),
             approve_threshold: None,
             reject_threshold: None,
+            deterministic_weight: Some(0.70),
+            llm_weight: Some(0.30),
         };
 
         let (approve, reject) = cfg.resolved_thresholds();
@@ -638,11 +666,28 @@ mod tests {
             profile: Some(ConfidenceProfile::Conservative),
             approve_threshold: Some(0.88),
             reject_threshold: Some(0.22),
+            deterministic_weight: Some(0.70),
+            llm_weight: Some(0.30),
         };
 
         let (approve, reject) = cfg.resolved_thresholds();
         assert_eq!(approve, 0.88);
         assert_eq!(reject, 0.22);
+    }
+
+    #[test]
+    fn decision_blend_weights_default_to_seventy_thirty() {
+        let cfg = DecisionConfig {
+            profile: Some(ConfidenceProfile::Conservative),
+            approve_threshold: None,
+            reject_threshold: None,
+            deterministic_weight: None,
+            llm_weight: None,
+        };
+
+        let (deterministic, llm) = cfg.resolved_blend_weights();
+        assert_eq!(deterministic, 0.70);
+        assert_eq!(llm, 0.30);
     }
 
     #[test]

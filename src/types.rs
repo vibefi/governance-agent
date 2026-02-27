@@ -45,7 +45,13 @@ pub struct ReviewResult {
     pub proposal_id: String,
     pub root_cid: Option<String>,
     pub findings: Vec<Finding>,
-    pub llm_summary: Option<String>,
+    #[serde(default)]
+    pub deterministic_score: Option<f32>,
+    #[serde(default)]
+    pub deterministic_weight: Option<f32>,
+    #[serde(default)]
+    pub llm_weight: Option<f32>,
+    pub llm_score: Option<f32>,
     pub llm_audit: Option<LlmAudit>,
     pub score: f32,
     pub reviewed_at: DateTime<Utc>,

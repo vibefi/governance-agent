@@ -36,26 +36,22 @@ max_bundle_bytes = 41943040
 [decision]
 # profile is only an alias. Numeric thresholds are the source of truth.
 profile = "conservative"
-approve_threshold = 0.90
+approve_threshold = 0.80
 reject_threshold = 0.30
+deterministic_weight = 0.70
+llm_weight = 0.30
 
 [llm.openai]
 enabled = true
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
-model = "gpt-4.1-mini"
+model = "gpt-5-nano"
 
 [llm.anthropic]
 enabled = true
 base_url = "https://api.anthropic.com/v1"
 api_key_env = "ANTHROPIC_API_KEY"
-model = "claude-3-5-sonnet-latest"
-
-[llm.opencode]
-enabled = true
-base_url = "http://127.0.0.1:4096/v1"
-api_key_env = "OPENCODE_API_KEY"
-model = "default"
+model = "claude-haiku-4-5"
 
 [notifications.telegram]
 enabled = false

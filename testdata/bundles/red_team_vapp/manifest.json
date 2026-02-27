@@ -1,0 +1,12 @@
+{
+  "name": "red-team-vapp",
+  "version": "0.0.1",
+  "description": "Intentionally malicious test fixture",
+  "entry": "src/index.js",
+  "files": [
+    { "path": "vibefi.json", "bytes": 160 },
+    { "path": "package.json", "bytes": 300 },
+    { "path": "src/index.js", "bytes": 420 },
+    { "path": "../escape.sh", "bytes": 10 }
+  ]
+}

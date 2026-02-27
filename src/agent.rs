@@ -1,6 +1,7 @@
 use std::{fs, time::Duration};
 
 use anyhow::Result;
+use tokio::sync::watch;
 
 use crate::{
     chain::ChainAdapter,
@@ -45,6 +46,8 @@ impl Agent {
     }
 
     pub async fn run_loop(&self, once: bool) -> Result<()> {
+        let shutdown = install_shutdown_signal_listener();
+
         tracing::debug!(
             config = %self.redacted_config_json(),
             "resolved run config"
@@ -71,7 +74,12 @@ impl Agent {
         }
 
         loop {
-            self.scan_and_process_once().await?;
+            if *shutdown.borrow() {
+                tracing::info!("shutdown signal received; stopping agent loop");
+                return Ok(());
+            }
+
+            self.scan_and_process_once(Some(&shutdown)).await?;
             if once {
                 tracing::info!("agent run loop finished single pass");
                 return Ok(());
@@ -80,7 +88,16 @@ impl Agent {
                 sleep_secs = self.config.poll_interval_secs,
                 "scan cycle complete; waiting before next block check"
             );
-            tokio::time::sleep(Duration::from_secs(self.config.poll_interval_secs)).await;
+            let mut shutdown_wait = shutdown.clone();
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(self.config.poll_interval_secs)) => {}
+                changed = shutdown_wait.changed() => {
+                    if changed.is_ok() && *shutdown_wait.borrow() {
+                        tracing::info!("shutdown signal received during sleep; exiting loop");
+                        return Ok(());
+                    }
+                }
+            }
         }
     }
 
@@ -88,7 +105,8 @@ impl Agent {
         let mut state = self.storage.load()?;
         let latest = self.chain.latest_block().await?;
         let end = to_block.unwrap_or(latest);
-        self.process_range(&mut state, from_block, end).await?;
+        self.process_range(&mut state, from_block, end, None)
+            .await?;
         state.last_scanned_block = state.last_scanned_block.max(end);
         self.storage.save(&state)?;
         Ok(())
@@ -103,6 +121,7 @@ impl Agent {
         let review = review_proposal(
             &proposal,
             &self.config.review,
+            &self.config.decision,
             &self.bundle_fetcher,
             &self.llm,
             self.prompt_override.as_deref(),
@@ -110,10 +129,24 @@ impl Agent {
         .await?;
 
         let decision = decide(&self.config.decision, &review);
+        let (approve_threshold, reject_threshold) = self.config.decision.resolved_thresholds();
+        let deterministic_score = review.deterministic_score.unwrap_or(review.score);
+        let deterministic_weight = review.deterministic_weight.unwrap_or(0.70);
+        let llm_weight = review.llm_weight.unwrap_or(0.30);
         tracing::info!(
             proposal_id = %proposal_id,
             vote = ?decision.vote,
             confidence = decision.confidence,
+            deterministic_score,
+            llm_score = review.llm_score,
+            deterministic_weight,
+            llm_weight,
+            blended_score = review.score,
+            reject_threshold,
+            approve_threshold,
+            reasons = ?decision.reasons,
+            blocking_findings = ?decision.blocking_findings,
+            requires_human_override = decision.requires_human_override,
             "review-once complete"
         );
 
@@ -145,7 +178,7 @@ impl Agent {
         Ok(())
     }
 
-    async fn scan_and_process_once(&self) -> Result<()> {
+    async fn scan_and_process_once(&self, shutdown: Option<&watch::Receiver<bool>>) -> Result<()> {
         let mut state = self.storage.load()?;
         tracing::info!(
             last_scanned_block = state.last_scanned_block,
@@ -190,14 +223,21 @@ impl Agent {
             return Ok(());
         }
 
-        self.process_range(&mut state, start, latest).await?;
+        self.process_range(&mut state, start, latest, shutdown)
+            .await?;
         state.last_scanned_block = latest;
         self.storage.save(&state)?;
 
         Ok(())
     }
 
-    async fn process_range(&self, state: &mut State, from_block: u64, to_block: u64) -> Result<()> {
+    async fn process_range(
+        &self,
+        state: &mut State,
+        from_block: u64,
+        to_block: u64,
+        shutdown: Option<&watch::Receiver<bool>>,
+    ) -> Result<()> {
         let proposals = self.chain.fetch_proposals(from_block, to_block).await?;
         if proposals.is_empty() {
             tracing::info!(from_block, to_block, "no proposals found in range");
@@ -235,8 +275,16 @@ impl Agent {
         } else {
             Box::new(DryRunVoteExecutor)
         };
+        let (approve_threshold, reject_threshold) = self.config.decision.resolved_thresholds();
 
         for proposal in proposals {
+            if shutdown_requested(shutdown) {
+                tracing::info!(
+                    "shutdown signal received; stopping proposal processing for current range"
+                );
+                break;
+            }
+
             let key = proposal.proposal_id.clone();
             if state.proposals.contains_key(&key) {
                 continue;
@@ -245,6 +293,7 @@ impl Agent {
             let review = review_proposal(
                 &proposal,
                 &self.config.review,
+                &self.config.decision,
                 &self.bundle_fetcher,
                 &self.llm,
                 self.prompt_override.as_deref(),
@@ -252,6 +301,25 @@ impl Agent {
             .await?;
 
             let decision = decide(&self.config.decision, &review);
+            let deterministic_score = review.deterministic_score.unwrap_or(review.score);
+            let deterministic_weight = review.deterministic_weight.unwrap_or(0.70);
+            let llm_weight = review.llm_weight.unwrap_or(0.30);
+            tracing::info!(
+                proposal_id = %proposal.proposal_id,
+                vote = ?decision.vote,
+                confidence = decision.confidence,
+                deterministic_score,
+                reasons = ?decision.reasons,
+                blocking_findings = ?decision.blocking_findings,
+                requires_human_override = decision.requires_human_override,
+                llm_score = review.llm_score,
+                deterministic_weight,
+                llm_weight,
+                blended_score = review.score,
+                reject_threshold,
+                approve_threshold,
+                "proposal decision computed"
+            );
             let vote_execution = match vote_executor.submit_vote(&proposal, &decision).await {
                 Ok(vote) => Some(vote),
                 Err(err) => {
@@ -288,5 +356,63 @@ impl Agent {
 
         serde_json::to_string_pretty(&config)
             .unwrap_or_else(|_| "<failed to serialize config>".to_string())
+    }
+}
+
+fn install_shutdown_signal_listener() -> watch::Receiver<bool> {
+    let (tx, rx) = watch::channel(false);
+
+    tokio::spawn(async move {
+        wait_for_shutdown_signal().await;
+        let _ = tx.send(true);
+    });
+
+    rx
+}
+
+fn shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {
+    shutdown.is_some_and(|signal| *signal.borrow())
+}
+
+async fn wait_for_shutdown_signal() {
+    #[cfg(unix)]
+    {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut sigterm) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = sigterm.recv() => {}
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "failed to register SIGTERM handler; falling back to ctrl_c only");
+                let _ = tokio::signal::ctrl_c().await;
+            }
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::watch;
+
+    use super::shutdown_requested;
+
+    #[test]
+    fn shutdown_flag_defaults_to_false() {
+        let (_tx, rx) = watch::channel(false);
+        assert!(!shutdown_requested(Some(&rx)));
+    }
+
+    #[test]
+    fn shutdown_flag_reflects_signal_state() {
+        let (tx, rx) = watch::channel(false);
+        tx.send(true).expect("send shutdown signal");
+        assert!(shutdown_requested(Some(&rx)));
     }
 }

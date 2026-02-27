@@ -2,10 +2,11 @@ use std::collections::BTreeSet;
 
 use anyhow::Result;
 use chrono::Utc;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    config::ReviewConfig,
+    config::{DecisionConfig, ReviewConfig},
     ipfs::{BundleFetcher, Manifest},
     llm::{CompositeLlm, LlmContext, redact_secrets},
     types::{DecodedAction, Finding, LlmAudit, Proposal, ReviewResult, Severity},
@@ -13,17 +14,21 @@ use crate::{
 
 const MAX_TEXT_FETCH_BYTES: usize = 24 * 1024;
 const MAX_SOURCE_FILES_FOR_SCAN: usize = 6;
+const MAX_BUNDLE_INDEX_BYTES: usize = 64 * 1024;
+const MAX_BUNDLE_CONTENT_BYTES: usize = 256 * 1024;
+const MAX_BUNDLE_CONTENT_FETCHES: usize = 120;
+const SEMANTIC_SCORING_RUBRIC: &str = include_str!("../prompts/semantic_scoring_rubric.md");
 
 pub async fn review_proposal(
     proposal: &Proposal,
     config: &ReviewConfig,
+    decision_config: &DecisionConfig,
     bundle_fetcher: &BundleFetcher,
     llm: &CompositeLlm,
     prompt_override: Option<&str>,
 ) -> Result<ReviewResult> {
     let root_cid = extract_root_cid(&proposal.action);
     let mut findings = Vec::<Finding>::new();
-    let mut llm_context = Vec::<String>::new();
     let mut score = match &proposal.action {
         DecodedAction::Unsupported { reason } => {
             findings.push(Finding {
@@ -60,37 +65,45 @@ pub async fn review_proposal(
     };
 
     if let Some(m) = manifest.as_ref() {
-        evaluate_manifest(m, config, &mut findings, &mut score, &mut llm_context);
+        evaluate_manifest(m, config, &mut findings, &mut score);
 
         if let Some(cid) = &root_cid {
-            analyze_bundle_lightweight(
-                bundle_fetcher,
-                cid,
-                m,
-                &mut findings,
-                &mut score,
-                &mut llm_context,
-            )
-            .await;
+            analyze_bundle_lightweight(bundle_fetcher, cid, m, &mut findings, &mut score).await;
         }
     }
 
-    let llm_output = build_llm_summary(
+    let bundle_snapshot = if let (Some(cid), Some(m)) = (&root_cid, manifest.as_ref()) {
+        Some(
+            build_bundle_snapshot(bundle_fetcher, cid, m)
+                .await
+                .unwrap_or_else(|err| format!("Bundle snapshot unavailable: {err}")),
+        )
+    } else {
+        None
+    };
+
+    score = score.clamp(0.0, 1.0);
+    let deterministic_score = score;
+    let (deterministic_weight, llm_weight) = decision_config.resolved_blend_weights();
+
+    let llm_output = build_llm_score(
         proposal,
-        manifest.as_ref(),
+        &findings,
+        bundle_snapshot.as_deref(),
         llm,
         prompt_override,
-        &llm_context,
     )
     .await;
-    if llm_output.is_some() {
-        score += 0.05;
+    if let Some((llm_score, _)) = &llm_output {
+        score = (deterministic_weight * deterministic_score) + (llm_weight * llm_score);
+    } else {
+        score = deterministic_score;
     }
 
     score = score.clamp(0.0, 1.0);
 
-    let (llm_summary, llm_audit) = match llm_output {
-        Some((summary, audit)) => (Some(summary), Some(audit)),
+    let (llm_score, llm_audit) = match llm_output {
+        Some((score, audit)) => (Some(score), Some(audit)),
         None => (None, None),
     };
 
@@ -98,7 +111,10 @@ pub async fn review_proposal(
         proposal_id: proposal.proposal_id.clone(),
         root_cid,
         findings,
-        llm_summary,
+        deterministic_score: Some(deterministic_score),
+        deterministic_weight: Some(deterministic_weight),
+        llm_weight: Some(llm_weight),
+        llm_score,
         llm_audit,
         score,
         reviewed_at: Utc::now(),
@@ -110,7 +126,6 @@ fn evaluate_manifest(
     config: &ReviewConfig,
     findings: &mut Vec<Finding>,
     score: &mut f32,
-    llm_context: &mut Vec<String>,
 ) {
     let files = manifest.files.clone().unwrap_or_default();
 
@@ -159,13 +174,6 @@ fn evaluate_manifest(
             *score -= 0.25;
         }
     }
-
-    llm_context.push(format!(
-        "Manifest stats: files={}, total_bytes={}, entry={:?}",
-        files.len(),
-        total_bytes,
-        manifest.entry
-    ));
 }
 
 async fn analyze_bundle_lightweight(
@@ -174,7 +182,6 @@ async fn analyze_bundle_lightweight(
     manifest: &Manifest,
     findings: &mut Vec<Finding>,
     score: &mut f32,
-    llm_context: &mut Vec<String>,
 ) {
     let files = manifest.files.clone().unwrap_or_default();
 
@@ -201,7 +208,7 @@ async fn analyze_bundle_lightweight(
             .fetch_text_file(root_cid, "package.json", MAX_TEXT_FETCH_BYTES)
             .await
     {
-        analyze_package_json(&package_text, findings, score, llm_context);
+        analyze_package_json(&package_text, findings, score);
     }
 
     let source_candidates = files
@@ -222,7 +229,6 @@ async fn analyze_bundle_lightweight(
                 for hit in hits {
                     aggregated_hits.insert(hit.to_string());
                 }
-                llm_context.push(format!("Suspicious token hits in {}", path));
             }
         }
     }
@@ -239,12 +245,7 @@ async fn analyze_bundle_lightweight(
     }
 }
 
-fn analyze_package_json(
-    package_text: &str,
-    findings: &mut Vec<Finding>,
-    score: &mut f32,
-    llm_context: &mut Vec<String>,
-) {
+fn analyze_package_json(package_text: &str, findings: &mut Vec<Finding>, score: &mut f32) {
     let parsed = serde_json::from_str::<Value>(package_text);
     let Ok(value) = parsed else {
         findings.push(Finding {
@@ -270,70 +271,95 @@ fn analyze_package_json(
                 severity: Severity::Warning,
                 message: "package.json scripts contain potentially risky commands".to_string(),
             });
-            llm_context.push(format!(
-                "Suspicious package scripts: {}",
-                suspicious.join(" || ")
-            ));
             *score -= 0.1;
         }
     }
 }
 
-async fn build_llm_summary(
+async fn build_llm_score(
     proposal: &Proposal,
-    manifest: Option<&Manifest>,
+    findings: &[Finding],
+    bundle_snapshot: Option<&str>,
     llm: &CompositeLlm,
     prompt_override: Option<&str>,
-    llm_context: &[String],
-) -> Option<(String, LlmAudit)> {
+) -> Option<(f32, LlmAudit)> {
+    let base_prompt = review_prompt(proposal, findings, bundle_snapshot);
     let prompt = match prompt_override {
-        Some(custom) => format!(
-            "{custom}\n\n{}",
-            review_prompt(proposal, manifest, llm_context)
-        ),
-        None => review_prompt(proposal, manifest, llm_context),
+        Some(custom) => format!("{custom}\n\n{SEMANTIC_SCORING_RUBRIC}\n\n{base_prompt}"),
+        None => format!("{SEMANTIC_SCORING_RUBRIC}\n\n{base_prompt}"),
     };
 
-    llm.analyze_best_effort(&LlmContext {
-        prompt: prompt.clone(),
-    })
-    .await
-    .map(|resp| {
-        let summary = format!("[{}:{}] {}", resp.provider, resp.model, resp.text);
-        let audit = LlmAudit {
-            provider: resp.provider,
-            model: resp.model,
-            prompt_redacted: redact_secrets(&prompt),
-            response_redacted: redact_secrets(&resp.text),
-        };
-        (summary, audit)
-    })
+    let prompt_preview = preview_chars(&prompt, 500);
+    tracing::debug!(
+        proposal_id = %proposal.proposal_id,
+        prompt_preview = %prompt_preview,
+        prompt_len = prompt.len(),
+        "review stage prepared LLM prompt preview"
+    );
+    tracing::trace!(
+        proposal_id = %proposal.proposal_id,
+        prompt = %prompt,
+        "review stage prepared full LLM prompt"
+    );
+
+    let response = llm
+        .analyze_best_effort(&LlmContext {
+            prompt: prompt.clone(),
+        })
+        .await?;
+
+    let response_preview = preview_chars(&response.text, 500);
+    tracing::debug!(
+        proposal_id = %proposal.proposal_id,
+        provider = %response.provider,
+        model = %response.model,
+        response_preview = %response_preview,
+        response_len = response.text.len(),
+        "review stage received LLM response preview"
+    );
+    tracing::trace!(
+        proposal_id = %proposal.proposal_id,
+        provider = %response.provider,
+        model = %response.model,
+        response = %response.text,
+        "review stage received full LLM response"
+    );
+
+    let llm_score = parse_llm_score(&response.text)?;
+
+    let audit = LlmAudit {
+        provider: response.provider,
+        model: response.model,
+        prompt_redacted: redact_secrets(&prompt),
+        response_redacted: redact_secrets(&response.text),
+    };
+
+    Some((llm_score, audit))
 }
 
 fn review_prompt(
     proposal: &Proposal,
-    manifest: Option<&Manifest>,
-    llm_context: &[String],
+    findings: &[Finding],
+    bundle_snapshot: Option<&str>,
 ) -> String {
-    let manifest_snippet = if let Some(m) = manifest {
-        let files = m.files.as_ref().map(|x| x.len()).unwrap_or_default();
-        format!(
-            "Manifest: name={:?}, version={:?}, files={}.",
-            m.name, m.version, files
-        )
+    let findings_summary = if findings.is_empty() {
+        "none".to_string()
     } else {
-        "Manifest unavailable.".to_string()
+        findings
+            .iter()
+            .map(|finding| format!("- {:?}: {}", finding.severity, finding.message))
+            .collect::<Vec<_>>()
+            .join("\n")
     };
 
-    let context = if llm_context.is_empty() {
-        "No extra static-analysis context collected.".to_string()
-    } else {
-        llm_context.join("\n")
-    };
-
+    let bundle_section = bundle_snapshot.unwrap_or("Bundle snapshot unavailable.");
     format!(
-        "Review this governance proposal and provide risk summary. Proposal id: {}. Description: {}. Action: {:?}. {}\n\nStatic analysis context:\n{}",
-        proposal.proposal_id, proposal.description, proposal.action, manifest_snippet, context
+        "Proposal metadata:\n- proposal_id: {}\n- description: {}\n- action: {:?}\n\nDeterministic findings:\n{}\n\nBundle snapshot:\n{}",
+        proposal.proposal_id,
+        proposal.description,
+        proposal.action,
+        findings_summary,
+        bundle_section
     )
 }
 
@@ -382,9 +408,144 @@ fn detect_suspicious_tokens(source: &str) -> Vec<&'static str> {
     .collect()
 }
 
+#[derive(Debug, Deserialize)]
+struct ScorePayload {
+    score: f32,
+}
+
+fn parse_llm_score(raw: &str) -> Option<f32> {
+    let parsed = serde_json::from_str::<ScorePayload>(raw).ok();
+    let score = match parsed {
+        Some(value) => value.score,
+        None => {
+            let wrapped = serde_json::from_str::<Value>(raw)
+                .ok()
+                .and_then(|value| value.get("score").cloned())
+                .and_then(|value| serde_json::from_value::<f32>(value).ok());
+            wrapped?
+        }
+    };
+
+    if !(0.0..=1.0).contains(&score) {
+        tracing::warn!(score, "llm returned out-of-range score; ignoring value");
+        return None;
+    }
+
+    Some(score)
+}
+
+fn preview_chars(text: &str, max_chars: usize) -> String {
+    let mut chars = text.chars();
+    let preview = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{preview}...[truncated]")
+    } else {
+        preview
+    }
+}
+
+async fn build_bundle_snapshot(
+    bundle_fetcher: &BundleFetcher,
+    root_cid: &str,
+    manifest: &Manifest,
+) -> Result<String> {
+    let files = manifest.files.clone().unwrap_or_default();
+    if files.is_empty() {
+        return Ok("Bundle file index: empty".to_string());
+    }
+
+    let mut index = String::new();
+    let mut indexed_count = 0usize;
+    for file in &files {
+        let line = format!("- {} ({} bytes)\n", file.path, file.bytes);
+        if index.len() + line.len() > MAX_BUNDLE_INDEX_BYTES {
+            break;
+        }
+        index.push_str(&line);
+        indexed_count += 1;
+    }
+    let truncated_index_count = files.len().saturating_sub(indexed_count);
+    if truncated_index_count > 0 {
+        index.push_str(&format!(
+            "... file index truncated: {} entries omitted ...\n",
+            truncated_index_count
+        ));
+    }
+
+    let mut content = String::new();
+    let mut included_contents = 0usize;
+    let mut omitted_non_text = 0usize;
+    let mut omitted_large = 0usize;
+    let mut fetch_budget_exhausted = false;
+
+    for file in files.iter().take(MAX_BUNDLE_CONTENT_FETCHES) {
+        if file.bytes as usize > MAX_TEXT_FETCH_BYTES {
+            omitted_large += 1;
+            continue;
+        }
+
+        match bundle_fetcher
+            .fetch_text_file(root_cid, &file.path, MAX_TEXT_FETCH_BYTES)
+            .await
+        {
+            Ok(Some(text)) => {
+                let section = format!(
+                    "\n--- file: {} ({} bytes) ---\n{}\n",
+                    file.path, file.bytes, text
+                );
+                if content.len() + section.len() > MAX_BUNDLE_CONTENT_BYTES {
+                    fetch_budget_exhausted = true;
+                    break;
+                }
+                content.push_str(&section);
+                included_contents += 1;
+            }
+            Ok(None) | Err(_) => {
+                omitted_non_text += 1;
+            }
+        }
+    }
+
+    let inspected = files.len().min(MAX_BUNDLE_CONTENT_FETCHES);
+    let skipped_by_fetch_cap = files.len().saturating_sub(inspected);
+
+    let summary = format!(
+        "Bundle summary: total_files={}, indexed_files={}, content_files_included={}, omitted_large_files={}, omitted_non_text_or_unavailable={}, fetch_cap_omitted={}, content_truncated={}",
+        files.len(),
+        indexed_count,
+        included_contents,
+        omitted_large,
+        omitted_non_text,
+        skipped_by_fetch_cap,
+        fetch_budget_exhausted
+    );
+
+    Ok(format!(
+        "{summary}\n\nBundle file index:\n{index}\nText file contents:\n{content}"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{contains_suspicious_script_cmd, detect_suspicious_tokens};
+    use std::{
+        fs,
+        path::{Path, PathBuf},
+    };
+
+    use chrono::Utc;
+    use serde_json::json;
+
+    use crate::{
+        config::{DecisionConfig, IpfsConfig, LlmConfig, ProviderConfig, ReviewConfig},
+        ipfs::{BundleFetcher, Manifest, ManifestFile},
+        llm::CompositeLlm,
+        types::{DecodedAction, Proposal},
+    };
+
+    use super::{
+        build_bundle_snapshot, contains_suspicious_script_cmd, detect_suspicious_tokens,
+        preview_chars, review_proposal,
+    };
 
     #[test]
     fn script_detection_flags_network_shell_commands() {
@@ -400,5 +561,218 @@ mod tests {
         let hits = detect_suspicious_tokens(src);
         assert!(hits.contains(&"child_process"));
         assert!(hits.contains(&"eval("));
+    }
+
+    #[test]
+    fn preview_chars_appends_truncated_marker_when_needed() {
+        let preview = preview_chars("abcdef", 3);
+        assert_eq!(preview, "abc...[truncated]");
+    }
+
+    #[test]
+    fn preview_chars_returns_full_text_when_short() {
+        let preview = preview_chars("abc", 10);
+        assert_eq!(preview, "abc");
+    }
+
+    #[test]
+    fn parse_llm_score_accepts_valid_json_payload() {
+        let score = super::parse_llm_score(&json!({ "score": 0.72 }).to_string());
+        assert_eq!(score, Some(0.72));
+    }
+
+    #[test]
+    fn parse_llm_score_rejects_out_of_range_values() {
+        let score = super::parse_llm_score(&json!({ "score": 1.7 }).to_string());
+        assert!(score.is_none());
+    }
+
+    #[test]
+    fn parse_llm_score_accepts_low_value_payload() {
+        let score = super::parse_llm_score(&json!({ "score": 0.05 }).to_string());
+        assert_eq!(score, Some(0.05));
+    }
+
+    #[tokio::test]
+    async fn bundle_snapshot_includes_index_and_cached_text_content() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("gov-agent-review-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).expect("create temp cache dir");
+
+        let root_cid = "bafy-test-cid";
+        let cid_dir = temp_dir.join(root_cid);
+        fs::create_dir_all(cid_dir.join("src")).expect("create cid cache tree");
+        fs::write(
+            cid_dir.join("manifest.json"),
+            r#"{"name":"test","version":"1.0.0"}"#,
+        )
+        .expect("write cached manifest");
+        fs::write(cid_dir.join("src/app.ts"), "export const x = 1;\n").expect("write cached file");
+
+        let fetcher = BundleFetcher::new(&IpfsConfig {
+            gateway_url: "http://127.0.0.1:1".to_string(),
+            request_timeout_secs: 1,
+            cache_dir: Some(temp_dir.clone()),
+        })
+        .expect("build fetcher");
+
+        let manifest = Manifest {
+            name: Some("test".to_string()),
+            version: Some("1.0.0".to_string()),
+            description: None,
+            entry: None,
+            files: Some(vec![ManifestFile {
+                path: "src/app.ts".to_string(),
+                bytes: 20,
+            }]),
+        };
+
+        let snapshot = build_bundle_snapshot(&fetcher, root_cid, &manifest)
+            .await
+            .expect("build snapshot");
+
+        assert!(snapshot.contains("Bundle file index:"));
+        assert!(snapshot.contains("src/app.ts (20 bytes)"));
+        assert!(snapshot.contains("--- file: src/app.ts (20 bytes) ---"));
+        assert!(snapshot.contains("export const x = 1;"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[tokio::test]
+    async fn red_team_fixture_produces_risky_findings_and_low_score_without_llm() {
+        let fixture_dir = red_team_fixture_dir();
+        let root_cid = "bafy-red-team-fixture";
+        let cache_root = temp_cache_root("gov-agent-red-team-review");
+        let cid_dir = cache_root.join(root_cid);
+        fs::create_dir_all(&cid_dir).expect("create cache cid dir");
+        copy_dir_recursive(&fixture_dir, &cid_dir).expect("copy fixture into cache");
+
+        let fetcher = BundleFetcher::new(&IpfsConfig {
+            gateway_url: "http://127.0.0.1:1".to_string(),
+            request_timeout_secs: 1,
+            cache_dir: Some(cache_root.clone()),
+        })
+        .expect("build fetcher");
+
+        let proposal = Proposal {
+            proposal_id: "1".to_string(),
+            proposer: "0x0000000000000000000000000000000000000001".to_string(),
+            description: "red-team fixture".to_string(),
+            vote_start: 1,
+            vote_end: 100,
+            block_number: 1,
+            tx_hash: None,
+            targets: vec![],
+            values: vec![],
+            calldatas: vec![],
+            action: DecodedAction::PublishDapp {
+                root_cid: root_cid.to_string(),
+                name: "red-team-vapp".to_string(),
+                version: "0.0.1".to_string(),
+                description: "fixture".to_string(),
+            },
+            discovered_at: Utc::now(),
+        };
+
+        let review = review_proposal(
+            &proposal,
+            &ReviewConfig {
+                prompt_file: None,
+                max_bundle_bytes: 40 * 1024 * 1024,
+            },
+            &DecisionConfig {
+                profile: None,
+                approve_threshold: None,
+                reject_threshold: None,
+                deterministic_weight: Some(0.70),
+                llm_weight: Some(0.30),
+            },
+            &fetcher,
+            &disabled_llm(),
+            None,
+        )
+        .await
+        .expect("review proposal");
+
+        let messages = review
+            .findings
+            .iter()
+            .map(|finding| finding.message.as_str())
+            .collect::<Vec<_>>();
+        assert!(
+            messages
+                .iter()
+                .any(|msg| msg.contains("manifest contains suspicious path")),
+            "expected suspicious path finding, got {messages:?}"
+        );
+        assert!(
+            messages.iter().any(|msg| {
+                msg.contains("package.json scripts contain potentially risky commands")
+            }),
+            "expected risky script finding, got {messages:?}"
+        );
+        assert!(
+            messages
+                .iter()
+                .any(|msg| msg.contains("source scan found potentially risky tokens")),
+            "expected risky source-token finding, got {messages:?}"
+        );
+        assert!(
+            review.score < 0.5,
+            "expected low review score for red-team fixture, got {}",
+            review.score
+        );
+        assert!(review.llm_score.is_none());
+
+        let _ = fs::remove_dir_all(&cache_root);
+    }
+
+    fn disabled_llm() -> CompositeLlm {
+        CompositeLlm::from_config(&LlmConfig {
+            openai: disabled_provider(),
+            anthropic: disabled_provider(),
+        })
+    }
+
+    fn disabled_provider() -> ProviderConfig {
+        ProviderConfig {
+            enabled: false,
+            base_url: None,
+            api_key_env: None,
+            model: None,
+        }
+    }
+
+    fn red_team_fixture_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("testdata")
+            .join("bundles")
+            .join("red_team_vapp")
+    }
+
+    fn temp_cache_root(prefix: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!("{}-{}", prefix, std::process::id()));
+        let _ = fs::remove_dir_all(&path);
+        fs::create_dir_all(&path).expect("create temp cache root");
+        path
+    }
+
+    fn copy_dir_recursive(from: &Path, to: &Path) -> std::io::Result<()> {
+        for entry in fs::read_dir(from)? {
+            let entry = entry?;
+            let file_type = entry.file_type()?;
+            let src = entry.path();
+            let dst = to.join(entry.file_name());
+
+            if file_type.is_dir() {
+                fs::create_dir_all(&dst)?;
+                copy_dir_recursive(&src, &dst)?;
+            } else if file_type.is_file() {
+                fs::copy(&src, &dst)?;
+            }
+        }
+        Ok(())
     }
 }
