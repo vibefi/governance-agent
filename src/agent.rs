@@ -133,17 +133,20 @@ impl Agent {
         let deterministic_score = review.deterministic_score.unwrap_or(review.score);
         let deterministic_weight = review.deterministic_weight.unwrap_or(0.70);
         let llm_weight = review.llm_weight.unwrap_or(0.30);
+        let llm_score = review
+            .llm_score
+            .map(|value| format!("{value:.2}"))
+            .unwrap_or_else(|| "none".to_string());
         tracing::info!(
             proposal_id = %proposal_id,
             vote = ?decision.vote,
-            confidence = decision.confidence,
-            deterministic_score,
-            llm_score = review.llm_score,
-            deterministic_weight,
-            llm_weight,
-            blended_score = review.score,
-            reject_threshold,
-            approve_threshold,
+            deterministic_score = %format_args!("{:.2}", deterministic_score),
+            llm_score = %llm_score,
+            deterministic_weight = %format_args!("{:.2}", deterministic_weight),
+            llm_weight = %format_args!("{:.2}", llm_weight),
+            blended_score = %format_args!("{:.2}", review.score),
+            reject_threshold = %format_args!("{:.2}", reject_threshold),
+            approve_threshold = %format_args!("{:.2}", approve_threshold),
             reasons = ?decision.reasons,
             blocking_findings = ?decision.blocking_findings,
             requires_human_override = decision.requires_human_override,
@@ -304,20 +307,28 @@ impl Agent {
             let deterministic_score = review.deterministic_score.unwrap_or(review.score);
             let deterministic_weight = review.deterministic_weight.unwrap_or(0.70);
             let llm_weight = review.llm_weight.unwrap_or(0.30);
+            let llm_score = review
+                .llm_score
+                .map(|value| format!("{value:.2}"))
+                .unwrap_or_else(|| "none".to_string());
+
+            tracing::trace!(
+                proposal_id = %proposal.proposal_id,
+                blocking_findings = ?decision.blocking_findings,
+                requires_human_override = decision.requires_human_override,
+                reasons = ?decision.reasons,
+                "proposal decision reasoning"
+            );
             tracing::info!(
                 proposal_id = %proposal.proposal_id,
                 vote = ?decision.vote,
-                confidence = decision.confidence,
-                deterministic_score,
-                reasons = ?decision.reasons,
-                blocking_findings = ?decision.blocking_findings,
-                requires_human_override = decision.requires_human_override,
-                llm_score = review.llm_score,
-                deterministic_weight,
-                llm_weight,
-                blended_score = review.score,
-                reject_threshold,
-                approve_threshold,
+                deterministic_score = %format_args!("{:.2}", deterministic_score),
+                llm_score = %llm_score,
+                deterministic_weight = %format_args!("{:.2}", deterministic_weight),
+                llm_weight = %format_args!("{:.2}", llm_weight),
+                blended_score = %format_args!("{:.2}", review.score),
+                reject_threshold = %format_args!("{:.2}", reject_threshold),
+                approve_threshold = %format_args!("{:.2}", approve_threshold),
                 "proposal decision computed"
             );
             let vote_execution = match vote_executor.submit_vote(&proposal, &decision).await {

@@ -84,7 +84,6 @@ pub struct Decision {
     #[serde(deserialize_with = "deserialize_proposal_id")]
     pub proposal_id: String,
     pub vote: VoteChoice,
-    pub confidence: f32,
     pub reasons: Vec<String>,
     pub blocking_findings: Vec<String>,
     pub requires_human_override: bool,

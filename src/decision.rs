@@ -16,17 +16,15 @@ pub fn decide(config: &DecisionConfig, review: &ReviewResult) -> Decision {
         .collect::<Vec<_>>();
     let has_critical = !blocking_findings.is_empty();
 
-    let (vote, confidence, mut reasons, requires_human_override) = if has_critical {
+    let (vote, mut reasons, requires_human_override) = if has_critical {
         (
             VoteChoice::Against,
-            0.95,
             vec!["critical finding detected in proposal review".to_string()],
             false,
         )
     } else if review.score >= approve_min {
         (
             VoteChoice::For,
-            review.score,
             vec![format!(
                 "review score {:.2} is above {:.2} approval threshold",
                 review.score, approve_min
@@ -36,7 +34,6 @@ pub fn decide(config: &DecisionConfig, review: &ReviewResult) -> Decision {
     } else if review.score <= reject_max {
         (
             VoteChoice::Against,
-            1.0 - review.score,
             vec![format!(
                 "review score {:.2} is below {:.2} reject threshold",
                 review.score, reject_max
@@ -46,7 +43,6 @@ pub fn decide(config: &DecisionConfig, review: &ReviewResult) -> Decision {
     } else {
         (
             VoteChoice::Abstain,
-            0.5,
             vec![format!(
                 "review score {:.2} is in abstain band [{:.2}, {:.2}]",
                 review.score, reject_max, approve_min
@@ -79,7 +75,6 @@ pub fn decide(config: &DecisionConfig, review: &ReviewResult) -> Decision {
     Decision {
         proposal_id: review.proposal_id.clone(),
         vote,
-        confidence,
         reasons,
         blocking_findings,
         requires_human_override,
@@ -148,7 +143,6 @@ mod tests {
             ),
         );
         assert_eq!(decision.vote, VoteChoice::Against);
-        assert!(decision.confidence > 0.9);
         assert_eq!(decision.blocking_findings, vec!["bad".to_string()]);
     }
 

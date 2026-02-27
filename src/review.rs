@@ -289,12 +289,15 @@ async fn build_llm_score(
         None => format!("{SEMANTIC_SCORING_RUBRIC}\n\n{base_prompt}"),
     };
 
-    let prompt_preview = preview_chars(&prompt, 500);
     tracing::debug!(
         proposal_id = %proposal.proposal_id,
-        prompt_preview = %prompt_preview,
+        proposal_description = %proposal.description,
+        proposal_action = ?proposal.action,
+        findings_count = findings.len(),
+        bundle_snapshot_present = bundle_snapshot.is_some(),
+        has_prompt_override = prompt_override.is_some(),
         prompt_len = prompt.len(),
-        "review stage prepared LLM prompt preview"
+        "review stage prepared LLM prompt inputs"
     );
     tracing::trace!(
         proposal_id = %proposal.proposal_id,
@@ -308,14 +311,12 @@ async fn build_llm_score(
         })
         .await?;
 
-    let response_preview = preview_chars(&response.text, 500);
     tracing::debug!(
         proposal_id = %proposal.proposal_id,
         provider = %response.provider,
         model = %response.model,
-        response_preview = %response_preview,
         response_len = response.text.len(),
-        "review stage received LLM response preview"
+        "review stage received LLM response metadata"
     );
     tracing::trace!(
         proposal_id = %proposal.proposal_id,
@@ -434,16 +435,6 @@ fn parse_llm_score(raw: &str) -> Option<f32> {
     Some(score)
 }
 
-fn preview_chars(text: &str, max_chars: usize) -> String {
-    let mut chars = text.chars();
-    let preview = chars.by_ref().take(max_chars).collect::<String>();
-    if chars.next().is_some() {
-        format!("{preview}...[truncated]")
-    } else {
-        preview
-    }
-}
-
 async fn build_bundle_snapshot(
     bundle_fetcher: &BundleFetcher,
     root_cid: &str,
@@ -544,7 +535,7 @@ mod tests {
 
     use super::{
         build_bundle_snapshot, contains_suspicious_script_cmd, detect_suspicious_tokens,
-        preview_chars, review_proposal,
+        review_proposal,
     };
 
     #[test]
@@ -561,18 +552,6 @@ mod tests {
         let hits = detect_suspicious_tokens(src);
         assert!(hits.contains(&"child_process"));
         assert!(hits.contains(&"eval("));
-    }
-
-    #[test]
-    fn preview_chars_appends_truncated_marker_when_needed() {
-        let preview = preview_chars("abcdef", 3);
-        assert_eq!(preview, "abc...[truncated]");
-    }
-
-    #[test]
-    fn preview_chars_returns_full_text_when_short() {
-        let preview = preview_chars("abc", 10);
-        assert_eq!(preview, "abc");
     }
 
     #[test]

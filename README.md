@@ -31,6 +31,13 @@ cargo run -- review-once --proposal-id 1 --profile sepolia --rpc-url "$SEPOLIA_R
 cargo run -- backfill --from-block 10239268 --profile sepolia --rpc-url "$SEPOLIA_RPC_URL"
 ```
 
+Quick malicious-bundle proposal flow (via `vibefi/e2e`) for fast gov-agent pickup testing:
+
+```bash
+bun run publish:test-bundle -- --bundle red_team_vapp
+bun run publish:test-bundle -- --bundle malicious_uniswapv2
+```
+
 ## Configuration
 
 - Optional file: `--config config/example.toml`

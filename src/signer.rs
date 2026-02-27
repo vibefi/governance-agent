@@ -47,9 +47,8 @@ impl VoteExecutor for DryRunVoteExecutor {
             submitted: false,
             tx_hash: None,
             reason: format!(
-                "dry-run: would submit support={} confidence={:.2}",
+                "dry-run: would submit support={}",
                 decision.vote.to_support_u8(),
-                decision.confidence
             ),
             at: Utc::now(),
         })
@@ -287,9 +286,8 @@ fn parse_proposal_id(value: &str) -> Result<U256> {
 
 pub fn build_vote_reason(decision: &Decision, max_len: usize) -> String {
     let mut text = format!(
-        "gov-agent vote={} confidence={:.2}; {}",
+        "gov-agent vote={}; {}",
         decision.vote.to_support_u8(),
-        decision.confidence,
         decision.reasons.join(" | ")
     );
 
@@ -331,7 +329,6 @@ mod tests {
         let decision = Decision {
             proposal_id: "1".to_string(),
             vote: VoteChoice::For,
-            confidence: 0.9,
             reasons: vec!["x".repeat(400)],
             blocking_findings: Vec::new(),
             requires_human_override: false,
@@ -347,7 +344,6 @@ mod tests {
         let decision = Decision {
             proposal_id: "1".to_string(),
             vote: VoteChoice::For,
-            confidence: 0.9,
             reasons: vec!["🚀".repeat(64)],
             blocking_findings: Vec::new(),
             requires_human_override: false,
