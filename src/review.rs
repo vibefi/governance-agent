@@ -717,9 +717,9 @@ mod tests {
             "expected suspicious path finding, got {messages:?}"
         );
         assert!(
-            messages.iter().any(|msg| {
-                msg.contains("bundle contains unexpected package.json")
-            }),
+            messages
+                .iter()
+                .any(|msg| { msg.contains("bundle contains unexpected package.json") }),
             "expected package.json finding, got {messages:?}"
         );
         assert!(
