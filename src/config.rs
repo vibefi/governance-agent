@@ -136,6 +136,7 @@ pub struct LlmConfig {
     pub openai: ProviderConfig,
     pub anthropic: ProviderConfig,
     pub ollama: ProviderConfig,
+    pub venice: ProviderConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -589,6 +590,12 @@ impl LlmConfig {
                 base_url: Some("http://127.0.0.1:11434".to_string()),
                 api_key_env: None,
                 model: Some("llama3.2:3b".to_string()),
+            },
+            venice: ProviderConfig {
+                enabled: true,
+                base_url: Some("https://api.venice.ai/api/v1".to_string()),
+                api_key_env: Some("VENICE_API_KEY".to_string()),
+                model: Some("venice-uncensored".to_string()),
             },
         }
     }

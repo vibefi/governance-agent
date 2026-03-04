@@ -17,7 +17,7 @@ This repository includes a working foundation through vote execution:
 - Graceful shutdown on Ctrl+C / SIGTERM for daemon mode
 - Decision engine with numeric thresholds and optional profile aliases
 - Keystore-backed vote submission (`castVoteWithReason`) with preflight checks, plus dry-run mode
-- LLM callouts for OpenAI, Anthropic, and Ollama with automatic provider fallback
+- LLM callouts for OpenAI, Anthropic, Ollama, and VeniceAI with automatic provider fallback
 - LLM audit persistence with prompt/response redaction
 - JSON-file state persistence and block cursoring
 

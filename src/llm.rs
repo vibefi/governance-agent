@@ -49,6 +49,7 @@ impl CompositeLlm {
         let providers: Vec<Box<dyn LlmProvider>> = vec![
             Box::new(OllamaProvider::new(&config.ollama)),
             Box::new(OpenAiLikeProvider::new("openai", &config.openai)),
+            Box::new(VeniceProvider::new(&config.venice)),
             Box::new(AnthropicProvider::new(&config.anthropic)),
         ];
         Self { providers }
@@ -321,6 +322,84 @@ impl LlmProvider for OllamaProvider {
     }
 }
 
+struct VeniceProvider {
+    cfg: ProviderConfig,
+    http: Client,
+}
+
+impl VeniceProvider {
+    fn new(cfg: &ProviderConfig) -> Self {
+        Self {
+            cfg: cfg.clone(),
+            http: Client::new(),
+        }
+    }
+}
+
+#[async_trait]
+impl LlmProvider for VeniceProvider {
+    async fn analyze(&self, ctx: &LlmContext) -> Result<LlmResponse> {
+        if !self.cfg.enabled {
+            return Err(anyhow!("provider disabled"));
+        }
+
+        let key_var = self
+            .cfg
+            .api_key_env
+            .clone()
+            .ok_or_else(|| anyhow!("provider missing api_key_env"))?;
+        let api_key = env::var(&key_var)
+            .map_err(|_| anyhow!("provider api key env var {key_var} is not set"))?;
+
+        let base_url = self
+            .cfg
+            .base_url
+            .clone()
+            .ok_or_else(|| anyhow!("provider missing base_url"))?;
+        let model = self
+            .cfg
+            .model
+            .clone()
+            .unwrap_or_else(|| "venice-uncensored".to_string());
+
+        let response = self
+            .http
+            .post(format!(
+                "{}/chat/completions",
+                base_url.trim_end_matches('/')
+            ))
+            .bearer_auth(api_key)
+            .json(&json!({
+                "model": model,
+                "temperature": 0.1,
+                "messages": [
+                    {"role": "user", "content": ctx.prompt}
+                ]
+            }))
+            .send()
+            .await?;
+
+        let status = response.status();
+        let body: serde_json::Value = response.json().await?;
+        if !status.is_success() {
+            return Err(anyhow!(
+                "venice provider returned HTTP {} with body {}",
+                status,
+                body
+            ));
+        }
+
+        let text = extract_chat_completion_text(&body)
+            .ok_or_else(|| anyhow!("venice provider response missing content"))?;
+
+        Ok(LlmResponse {
+            provider: "venice".to_string(),
+            model,
+            text,
+        })
+    }
+}
+
 pub fn redact_secrets(input: &str) -> String {
     let mut redacted = input.to_string();
     for regex in REDACTION_PATTERNS.iter() {
@@ -382,11 +461,37 @@ fn extract_ollama_text(body: &serde_json::Value) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn extract_chat_completion_text(body: &serde_json::Value) -> Option<String> {
+    let text = body
+        .get("choices")
+        .and_then(|value| value.as_array())
+        .and_then(|choices| {
+            choices.iter().find_map(|choice| {
+                let content = choice
+                    .get("message")
+                    .and_then(|value| value.get("content"))?;
+                if let Some(text) = content.as_str() {
+                    return Some(text.to_string());
+                }
+
+                content.as_array().and_then(|parts| {
+                    parts.iter().find_map(|part| {
+                        part.get("text")
+                            .and_then(|value| value.as_str())
+                            .map(ToString::to_string)
+                    })
+                })
+            })
+        });
+
+    text.filter(|value| !value.trim().is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
-    use super::{extract_ollama_text, redact_secrets};
+    use super::{extract_chat_completion_text, extract_ollama_text, redact_secrets};
 
     #[test]
     fn redacts_common_secret_patterns() {
@@ -421,6 +526,42 @@ mod tests {
         assert_eq!(
             extract_ollama_text(&body).as_deref(),
             Some("hello from chat")
+        );
+    }
+
+    #[test]
+    fn extracts_chat_completion_string_text() {
+        let body = json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": "hello from venice"
+                    }
+                }
+            ]
+        });
+        assert_eq!(
+            extract_chat_completion_text(&body).as_deref(),
+            Some("hello from venice")
+        );
+    }
+
+    #[test]
+    fn extracts_chat_completion_array_text() {
+        let body = json!({
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "hello from structured content"}
+                        ]
+                    }
+                }
+            ]
+        });
+        assert_eq!(
+            extract_chat_completion_text(&body).as_deref(),
+            Some("hello from structured content")
         );
     }
 }

@@ -713,6 +713,7 @@ mod tests {
             openai: disabled_provider(),
             anthropic: disabled_provider(),
             ollama: disabled_provider(),
+            venice: disabled_provider(),
         })
     }
 

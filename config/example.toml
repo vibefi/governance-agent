@@ -60,6 +60,12 @@ base_url = "http://127.0.0.1:11434"
 # api_key_env = "OLLAMA_API_KEY"
 model = "llama3.2:3b"
 
+[llm.venice]
+enabled = true
+base_url = "https://api.venice.ai/api/v1"
+api_key_env = "VENICE_API_KEY"
+model = "venice-uncensored"
+
 [notifications.telegram]
 enabled = false
 bot_token_env = "GOV_AGENT_TELEGRAM_BOT_TOKEN"
