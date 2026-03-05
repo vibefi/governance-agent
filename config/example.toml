@@ -32,7 +32,7 @@ state_file = "state.json"
 [review]
 prompt_file = "prompts/default_prompt.md"
 max_bundle_bytes = 41943040
-minify_bundle_text = true
+minify_bundle_text = false
 
 [decision]
 # profile is only an alias. Numeric thresholds are the source of truth.

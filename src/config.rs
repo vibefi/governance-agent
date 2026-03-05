@@ -254,7 +254,7 @@ impl AppConfig {
             review: ReviewConfig {
                 prompt_file: None,
                 max_bundle_bytes: 40 * 1024 * 1024,
-                minify_bundle_text: true,
+                minify_bundle_text: false,
             },
             decision: DecisionConfig {
                 profile: Some(ConfidenceProfile::Conservative),
@@ -294,7 +294,7 @@ impl AppConfig {
             review: ReviewConfig {
                 prompt_file: None,
                 max_bundle_bytes: 40 * 1024 * 1024,
-                minify_bundle_text: true,
+                minify_bundle_text: false,
             },
             decision: DecisionConfig {
                 profile: Some(ConfidenceProfile::Conservative),
