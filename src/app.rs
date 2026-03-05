@@ -19,7 +19,9 @@ pub async fn run() -> Result<()> {
     let config = AppConfig::load(&cli)?;
 
     let _telemetry_guard = init_tracing(cli.json_logs, &config.observability)?;
-    observability::init_metrics(&config.observability)?;
+    if should_init_metrics(&cli.command) {
+        observability::init_metrics(&config.observability)?;
+    }
 
     match &cli.command {
         Command::Config(args) => match args.command {
@@ -45,6 +47,13 @@ pub async fn run() -> Result<()> {
             agent.review_once(args.proposal_id.clone()).await
         }
     }
+}
+
+fn should_init_metrics(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::Run(_) | Command::Backfill(_) | Command::ReviewOnce(_)
+    )
 }
 
 fn init_tracing(json_logs: bool, cfg: &ObservabilityConfig) -> Result<TelemetryGuard> {

@@ -113,7 +113,7 @@ impl ChainAdapter {
             match decode_proposal_log(&log, &self.dapp_registry_address) {
                 Ok(proposal) => out.push(proposal),
                 Err(err) => {
-                    observability::record_provider_error("rpc", "decode_proposal_log");
+                    observability::record_provider_error("decoder", "proposal_log");
                     observability::incr_proposals_failed("decode");
                     tracing::warn!(error = %err, "failed to decode proposal log; skipping");
                 }

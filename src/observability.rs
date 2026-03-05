@@ -1,34 +1,45 @@
 use std::{
     net::SocketAddr,
+    sync::OnceLock,
     sync::atomic::{AtomicI64, Ordering},
     time::Instant,
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
 use crate::config::ObservabilityConfig;
 
 static LAST_SUCCESSFUL_POLL_TS: AtomicI64 = AtomicI64::new(0);
+static METRICS_INIT_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
 pub fn init_metrics(cfg: &ObservabilityConfig) -> Result<()> {
     if !cfg.metrics_enabled {
         return Ok(());
     }
 
-    let bind = cfg
-        .metrics_bind
-        .parse::<SocketAddr>()
-        .with_context(|| format!("invalid observability.metrics_bind: {}", cfg.metrics_bind))?;
+    let init_result = METRICS_INIT_RESULT.get_or_init(|| {
+        let bind = cfg.metrics_bind.parse::<SocketAddr>().map_err(|err| {
+            format!(
+                "invalid observability.metrics_bind: {}: {err}",
+                cfg.metrics_bind
+            )
+        })?;
 
-    PrometheusBuilder::new()
-        .with_http_listener(bind)
-        .install()
-        .context("failed to install prometheus recorder/exporter")?;
+        PrometheusBuilder::new()
+            .with_http_listener(bind)
+            .install()
+            .map_err(|err| format!("failed to install prometheus recorder/exporter: {err}"))?;
 
-    tracing::info!(bind = %bind, "prometheus metrics exporter enabled");
-    Ok(())
+        tracing::info!(bind = %bind, "prometheus metrics exporter enabled");
+        Ok(())
+    });
+
+    match init_result {
+        Ok(()) => Ok(()),
+        Err(err) => Err(anyhow!(err.clone())).context("metrics initialization failed"),
+    }
 }
 
 pub fn now() -> Instant {

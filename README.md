@@ -89,7 +89,7 @@ Dashboard-ready metrics:
 - `gov_agent_proposals_failed_total{stage=...}`
 - `gov_agent_stage_latency_seconds{stage=decode|fetch_proposals|review|vote_submit|...}`
 - `gov_agent_vote_submit_total{status=success|failure}`
-- `gov_agent_provider_errors_total{provider=rpc|ipfs|llm,operation=...}`
+- `gov_agent_provider_errors_total{provider=rpc|ipfs|llm|decoder,operation=...}`
 - `gov_agent_last_successful_poll_timestamp_seconds`
 - `gov_agent_last_poll_attempt_timestamp_seconds`
 - `gov_agent_last_processed_proposal_timestamp_seconds`
@@ -97,9 +97,9 @@ Dashboard-ready metrics:
 
 Critical alert examples:
 
-- Listener stale: `gov_agent_listener_staleness_seconds > 120`
+- Listener stale: `time() - gov_agent_last_successful_poll_timestamp_seconds > 120`
 - Repeated stage failures: rate on `gov_agent_proposals_failed_total{stage=...}`
-- Vote submit failures: rate on `gov_agent_vote_submit_total{status=\"failure\"}`
+- Vote submit failures: rate on `gov_agent_vote_submit_total{status="failure"}`
 
 ## Local Models
 
