@@ -6,6 +6,7 @@ This folder provides a local telemetry stack for `gov-agent`:
 - Grafana (dashboards)
 - Tempo (trace storage)
 - OpenTelemetry Collector (OTLP ingest + forward to Tempo)
+- Starter Prometheus alert rules
 
 ## Run
 
@@ -33,3 +34,11 @@ GOV_AGENT_OTLP_SERVICE_NAME=gov-agent-local
 ```
 
 Prometheus scrapes `host.docker.internal:9464` from the container network.
+
+## Included alerts
+
+Prometheus loads these starter alerts from `prometheus/alerts.yml`:
+
+- `GovAgentListenerStale`
+- `GovAgentVoteSubmitFailures`
+- `GovAgentRepeatedStageFailures`

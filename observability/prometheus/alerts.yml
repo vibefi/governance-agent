@@ -1,0 +1,32 @@
+groups:
+  - name: gov-agent-alerts
+    rules:
+      - alert: GovAgentListenerStale
+        expr: time() - gov_agent_last_successful_poll_timestamp_seconds > 120
+        for: 2m
+        labels:
+          severity: warning
+          service: gov-agent
+        annotations:
+          summary: gov-agent listener is stale
+          description: No successful poll has been recorded for more than 120 seconds.
+
+      - alert: GovAgentVoteSubmitFailures
+        expr: rate(gov_agent_vote_submit_total{status="failure"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: gov-agent
+        annotations:
+          summary: gov-agent vote submission failures detected
+          description: Vote submissions are failing continuously in the last 5 minutes.
+
+      - alert: GovAgentRepeatedStageFailures
+        expr: sum by (stage) (rate(gov_agent_proposals_failed_total[10m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          service: gov-agent
+        annotations:
+          summary: gov-agent stage failure rate is elevated
+          description: Proposal failures are repeatedly occurring for stage {{ $labels.stage }}.

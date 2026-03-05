@@ -137,6 +137,17 @@ Grafana provisions:
 - `Prometheus` datasource
 - `Tempo` datasource
 - `Gov Agent Observability` dashboard
+- Starter Prometheus alert rules:
+  - `GovAgentListenerStale`
+  - `GovAgentVoteSubmitFailures`
+  - `GovAgentRepeatedStageFailures`
+
+Check active alerts:
+
+```bash
+curl -s http://127.0.0.1:9090/api/v1/rules
+curl -s http://127.0.0.1:9090/api/v1/alerts
+```
 
 Stop/remove stack:
 

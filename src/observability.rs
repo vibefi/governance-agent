@@ -5,7 +5,7 @@ use std::{
     time::Instant,
 };
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use metrics::{counter, gauge, histogram};
 use metrics_exporter_prometheus::PrometheusBuilder;
 
@@ -38,7 +38,7 @@ pub fn init_metrics(cfg: &ObservabilityConfig) -> Result<()> {
 
     match init_result {
         Ok(()) => Ok(()),
-        Err(err) => Err(anyhow!(err.clone())).context("metrics initialization failed"),
+        Err(err) => Err(anyhow::anyhow!(err.clone())).context("metrics initialization failed"),
     }
 }
 

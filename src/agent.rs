@@ -2,6 +2,7 @@ use std::{fs, time::Duration};
 
 use anyhow::Result;
 use tokio::sync::watch;
+use tracing::Instrument;
 
 use crate::{
     chain::ChainAdapter,
@@ -291,11 +292,8 @@ impl Agent {
         let (approve_threshold, reject_threshold) = self.config.decision.resolved_thresholds();
 
         for proposal in proposals {
-            let proposal_span = tracing::info_span!(
-                "proposal_lifecycle",
-                proposal_id = %proposal.proposal_id
-            );
-            let _proposal_guard = proposal_span.enter();
+            let proposal_span =
+                tracing::info_span!("proposal_lifecycle", proposal_id = %proposal.proposal_id);
 
             if shutdown_requested(shutdown) {
                 tracing::info!(
@@ -318,6 +316,7 @@ impl Agent {
                 &self.llm,
                 self.prompt_override.as_deref(),
             )
+            .instrument(proposal_span.clone())
             .await
             {
                 Ok(review) => review,
@@ -363,7 +362,11 @@ impl Agent {
                 "proposal decision computed"
             );
             let vote_started = observability::now();
-            let vote_execution = match vote_executor.submit_vote(&proposal, &decision).await {
+            let vote_execution = match vote_executor
+                .submit_vote(&proposal, &decision)
+                .instrument(proposal_span.clone())
+                .await
+            {
                 Ok(vote) => {
                     observability::record_vote_submit(true);
                     Some(vote)
@@ -389,6 +392,7 @@ impl Agent {
                     "gov-agent processed proposal {} with vote {:?}",
                     processed.proposal.proposal_id, processed.decision.vote
                 ))
+                .instrument(proposal_span.clone())
                 .await;
 
             state.proposals.insert(key, processed);
