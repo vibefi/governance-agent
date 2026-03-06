@@ -8,7 +8,7 @@ use anyhow::{Context, Result, anyhow};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-use crate::config::IpfsConfig;
+use crate::{config::IpfsConfig, observability};
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Manifest {
@@ -55,6 +55,7 @@ impl BundleFetcher {
     }
 
     pub async fn fetch_manifest(&self, root_cid: &str) -> Result<Manifest> {
+        let fetch_started = observability::now();
         if root_cid.is_empty() {
             return Err(anyhow!("root CID is empty"));
         }
@@ -75,23 +76,28 @@ impl BundleFetcher {
             .get(url)
             .send()
             .await
-            .context("ipfs gateway request failed")?;
+            .context("ipfs gateway request failed")
+            .inspect_err(|_| observability::record_provider_error("ipfs", "fetch_manifest"))?;
 
         if !response.status().is_success() {
+            observability::record_provider_error("ipfs", "fetch_manifest_http_status");
             return Err(anyhow!("ipfs gateway returned HTTP {}", response.status()));
         }
 
         let bytes = response
             .bytes()
             .await
-            .context("failed reading manifest response bytes")?
+            .context("failed reading manifest response bytes")
+            .inspect_err(|_| observability::record_provider_error("ipfs", "fetch_manifest_bytes"))?
             .to_vec();
-        let manifest =
-            serde_json::from_slice::<Manifest>(&bytes).context("failed to decode manifest.json")?;
+        let manifest = serde_json::from_slice::<Manifest>(&bytes)
+            .context("failed to decode manifest.json")
+            .inspect_err(|_| observability::record_provider_error("ipfs", "decode_manifest"))?;
 
         if let Some(path) = self.cache_path(root_cid, "manifest.json") {
             let _ = write_atomic(&path, &bytes);
         }
+        observability::observe_stage_latency("ipfs_fetch_manifest", fetch_started);
 
         Ok(manifest)
     }
@@ -102,6 +108,7 @@ impl BundleFetcher {
         path: &str,
         max_bytes: usize,
     ) -> Result<Option<String>> {
+        let fetch_started = observability::now();
         if root_cid.is_empty() || path.is_empty() {
             return Ok(None);
         }
@@ -125,9 +132,11 @@ impl BundleFetcher {
             .get(url)
             .send()
             .await
-            .context("ipfs gateway request failed")?;
+            .context("ipfs gateway request failed")
+            .inspect_err(|_| observability::record_provider_error("ipfs", "fetch_text_file"))?;
 
         if !response.status().is_success() {
+            observability::record_provider_error("ipfs", "fetch_text_file_http_status");
             return Ok(None);
         }
 
@@ -137,7 +146,9 @@ impl BundleFetcher {
             return Ok(None);
         }
 
-        let bytes = response.bytes().await?;
+        let bytes = response.bytes().await.inspect_err(|_| {
+            observability::record_provider_error("ipfs", "fetch_text_file_bytes")
+        })?;
         if bytes.len() > max_bytes {
             return Ok(None);
         }
@@ -150,6 +161,7 @@ impl BundleFetcher {
         if let Some(cache_path) = self.cache_path(root_cid, path) {
             let _ = write_atomic(&cache_path, bytes.as_ref());
         }
+        observability::observe_stage_latency("ipfs_fetch_text", fetch_started);
 
         Ok(Some(text))
     }

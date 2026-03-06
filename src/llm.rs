@@ -8,7 +8,10 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::config::{LlmConfig, ProviderConfig};
+use crate::{
+    config::{LlmConfig, ProviderConfig},
+    observability,
+};
 
 static REDACTION_PATTERNS: Lazy<[Regex; 5]> = Lazy::new(|| {
     [
@@ -56,15 +59,21 @@ impl CompositeLlm {
     }
 
     pub async fn analyze_best_effort(&self, ctx: &LlmContext) -> Option<LlmResponse> {
+        let llm_started = observability::now();
         for provider in &self.providers {
             match provider.analyze(ctx).await {
-                Ok(response) => return Some(response),
+                Ok(response) => {
+                    observability::observe_stage_latency("llm_review", llm_started);
+                    return Some(response);
+                }
                 Err(err) => {
+                    observability::record_provider_error("llm", "provider_attempt");
                     tracing::warn!(error = %err, "llm provider attempt failed; trying next provider");
                     continue;
                 }
             }
         }
+        observability::observe_stage_latency("llm_review", llm_started);
         None
     }
 }

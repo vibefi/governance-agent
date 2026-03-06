@@ -11,6 +11,7 @@ use tokio::sync::Mutex;
 use crate::{
     config::NetworkConfig,
     decoder::{decode_proposal_log, proposal_created_topic0},
+    observability,
     types::Proposal,
 };
 
@@ -67,6 +68,7 @@ impl ChainAdapter {
             .get_chain_id()
             .await
             .context("failed to read chain id")
+            .inspect_err(|_| observability::record_provider_error("rpc", "get_chain_id"))
     }
 
     pub async fn latest_block(&self) -> Result<u64> {
@@ -75,6 +77,7 @@ impl ChainAdapter {
             .get_block_number()
             .await
             .context("failed to read latest block")
+            .inspect_err(|_| observability::record_provider_error("rpc", "get_block_number"))
     }
 
     pub async fn fetch_proposals(&self, from_block: u64, to_block: u64) -> Result<Vec<Proposal>> {
@@ -94,14 +97,28 @@ impl ChainAdapter {
             .to_block(to_block);
 
         let provider = self.provider().await?;
-        let logs = provider.get_logs(&filter).await.with_context(|| {
-            format!("failed to fetch ProposalCreated logs in range [{from_block}, {to_block}]")
-        })?;
+        let rpc_fetch_started = observability::now();
+        let logs = provider
+            .get_logs(&filter)
+            .await
+            .with_context(|| {
+                format!("failed to fetch ProposalCreated logs in range [{from_block}, {to_block}]")
+            })
+            .inspect_err(|_| observability::record_provider_error("rpc", "get_logs"))?;
+        observability::observe_stage_latency("rpc_fetch_logs", rpc_fetch_started);
 
         let mut out = Vec::with_capacity(logs.len());
         for log in logs {
-            let proposal = decode_proposal_log(&log, &self.dapp_registry_address)?;
-            out.push(proposal);
+            let decode_started = observability::now();
+            match decode_proposal_log(&log, &self.dapp_registry_address) {
+                Ok(proposal) => out.push(proposal),
+                Err(err) => {
+                    observability::record_provider_error("decoder", "proposal_log");
+                    observability::incr_proposals_failed("decode");
+                    tracing::warn!(error = %err, "failed to decode proposal log; skipping");
+                }
+            }
+            observability::observe_stage_latency("decode", decode_started);
         }
 
         Ok(out)
@@ -149,7 +166,8 @@ impl ChainAdapter {
         let provider = ProviderBuilder::new()
             .connect(&self.rpc_url)
             .await
-            .with_context(|| format!("failed to connect to rpc url {}", self.rpc_url))?
+            .with_context(|| format!("failed to connect to rpc url {}", self.rpc_url))
+            .inspect_err(|_| observability::record_provider_error("rpc", "connect"))?
             .erased();
 
         *guard = Some(provider.clone());

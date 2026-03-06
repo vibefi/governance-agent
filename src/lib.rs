@@ -8,6 +8,7 @@ pub mod decoder;
 pub mod ipfs;
 pub mod llm;
 pub mod notifier;
+pub mod observability;
 pub mod review;
 pub mod signer;
 pub mod storage;

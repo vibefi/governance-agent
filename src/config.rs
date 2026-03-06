@@ -21,6 +21,7 @@ pub struct AppConfig {
     pub decision: DecisionConfig,
     pub llm: LlmConfig,
     pub notifications: NotificationConfig,
+    pub observability: ObservabilityConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -160,6 +161,15 @@ pub struct TelegramConfig {
     pub chat_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ObservabilityConfig {
+    pub metrics_enabled: bool,
+    pub metrics_bind: String,
+    pub otlp_endpoint: Option<String>,
+    pub otlp_service_name: String,
+    pub otlp_timeout_secs: u64,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 struct PartialAppConfig {
     profile: Option<String>,
@@ -173,6 +183,7 @@ struct PartialAppConfig {
     decision: Option<DecisionConfig>,
     llm: Option<LlmConfig>,
     notifications: Option<NotificationConfig>,
+    observability: Option<ObservabilityConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -266,6 +277,7 @@ impl AppConfig {
             },
             llm: LlmConfig::defaults(),
             notifications: NotificationConfig::defaults(),
+            observability: ObservabilityConfig::defaults(),
         }
     }
 
@@ -306,6 +318,7 @@ impl AppConfig {
             },
             llm: LlmConfig::defaults(),
             notifications: NotificationConfig::defaults(),
+            observability: ObservabilityConfig::defaults(),
         }
     }
 
@@ -342,6 +355,9 @@ impl AppConfig {
         }
         if let Some(v) = partial.notifications {
             self.notifications = v;
+        }
+        if let Some(v) = partial.observability {
+            self.observability = v;
         }
     }
 
@@ -426,6 +442,28 @@ impl AppConfig {
             && let Some(parsed) = parse_bool_env(&v)
         {
             self.review.minify_bundle_text = parsed;
+        }
+        if let Ok(v) = env::var("GOV_AGENT_METRICS_ENABLED") {
+            self.observability.metrics_enabled =
+                matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "YES");
+        }
+        if let Ok(v) = env::var("GOV_AGENT_METRICS_BIND")
+            && !v.trim().is_empty()
+        {
+            self.observability.metrics_bind = v;
+        }
+        if let Ok(v) = env::var("GOV_AGENT_OTLP_ENDPOINT") {
+            self.observability.otlp_endpoint = if v.trim().is_empty() { None } else { Some(v) };
+        }
+        if let Ok(v) = env::var("GOV_AGENT_OTLP_SERVICE_NAME")
+            && !v.trim().is_empty()
+        {
+            self.observability.otlp_service_name = v;
+        }
+        if let Ok(v) = env::var("GOV_AGENT_OTLP_TIMEOUT_SECS")
+            && let Ok(parsed) = v.parse::<u64>()
+        {
+            self.observability.otlp_timeout_secs = parsed;
         }
     }
 
@@ -639,6 +677,18 @@ impl SignerConfig {
             min_vote_blocks_remaining: 3,
             max_gas_price_gwei: Some(200),
             max_priority_fee_gwei: Some(5),
+        }
+    }
+}
+
+impl ObservabilityConfig {
+    fn defaults() -> Self {
+        Self {
+            metrics_enabled: true,
+            metrics_bind: "127.0.0.1:9464".to_string(),
+            otlp_endpoint: None,
+            otlp_service_name: "gov-agent".to_string(),
+            otlp_timeout_secs: 5,
         }
     }
 }

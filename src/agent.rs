@@ -2,6 +2,7 @@ use std::{fs, time::Duration};
 
 use anyhow::Result;
 use tokio::sync::watch;
+use tracing::Instrument;
 
 use crate::{
     chain::ChainAdapter,
@@ -10,6 +11,7 @@ use crate::{
     ipfs::BundleFetcher,
     llm::CompositeLlm,
     notifier::MultiNotifier,
+    observability,
     review::review_proposal,
     signer::{DryRunVoteExecutor, KeystoreVoteExecutor, VoteExecutor, signing_readiness_reason},
     storage::{State, Storage},
@@ -182,6 +184,8 @@ impl Agent {
     }
 
     async fn scan_and_process_once(&self, shutdown: Option<&watch::Receiver<bool>>) -> Result<()> {
+        observability::record_poll_attempt();
+        let scan_started = observability::now();
         let mut state = self.storage.load()?;
         tracing::info!(
             last_scanned_block = state.last_scanned_block,
@@ -223,6 +227,8 @@ impl Agent {
                 latest_block = latest,
                 "no new blocks to scan"
             );
+            observability::record_poll_success();
+            observability::observe_stage_latency("scan", scan_started);
             return Ok(());
         }
 
@@ -230,6 +236,8 @@ impl Agent {
             .await?;
         state.last_scanned_block = latest;
         self.storage.save(&state)?;
+        observability::record_poll_success();
+        observability::observe_stage_latency("scan", scan_started);
 
         Ok(())
     }
@@ -241,7 +249,10 @@ impl Agent {
         to_block: u64,
         shutdown: Option<&watch::Receiver<bool>>,
     ) -> Result<()> {
+        let fetch_started = observability::now();
         let proposals = self.chain.fetch_proposals(from_block, to_block).await?;
+        observability::observe_stage_latency("fetch_proposals", fetch_started);
+        observability::incr_proposals_discovered(proposals.len());
         if proposals.is_empty() {
             tracing::info!(from_block, to_block, "no proposals found in range");
             return Ok(());
@@ -281,6 +292,9 @@ impl Agent {
         let (approve_threshold, reject_threshold) = self.config.decision.resolved_thresholds();
 
         for proposal in proposals {
+            let proposal_span =
+                tracing::info_span!("proposal_lifecycle", proposal_id = %proposal.proposal_id);
+
             if shutdown_requested(shutdown) {
                 tracing::info!(
                     "shutdown signal received; stopping proposal processing for current range"
@@ -293,7 +307,8 @@ impl Agent {
                 continue;
             }
 
-            let review = review_proposal(
+            let review_started = observability::now();
+            let review = match review_proposal(
                 &proposal,
                 &self.config.review,
                 &self.config.decision,
@@ -301,7 +316,22 @@ impl Agent {
                 &self.llm,
                 self.prompt_override.as_deref(),
             )
-            .await?;
+            .instrument(proposal_span.clone())
+            .await
+            {
+                Ok(review) => review,
+                Err(err) => {
+                    observability::observe_stage_latency("review", review_started);
+                    observability::incr_proposals_failed("review");
+                    tracing::warn!(
+                        proposal_id = %proposal.proposal_id,
+                        error = %err,
+                        "review stage failed"
+                    );
+                    continue;
+                }
+            };
+            observability::observe_stage_latency("review", review_started);
 
             let decision = decide(&self.config.decision, &review);
             let deterministic_score = review.deterministic_score.unwrap_or(review.score);
@@ -331,13 +361,24 @@ impl Agent {
                 approve_threshold = %format_args!("{:.2}", approve_threshold),
                 "proposal decision computed"
             );
-            let vote_execution = match vote_executor.submit_vote(&proposal, &decision).await {
-                Ok(vote) => Some(vote),
+            let vote_started = observability::now();
+            let vote_execution = match vote_executor
+                .submit_vote(&proposal, &decision)
+                .instrument(proposal_span.clone())
+                .await
+            {
+                Ok(vote) => {
+                    observability::record_vote_submit(true);
+                    Some(vote)
+                }
                 Err(err) => {
+                    observability::record_vote_submit(false);
+                    observability::incr_proposals_failed("vote");
                     tracing::warn!(proposal_id = proposal.proposal_id, error = %err, "vote submission failed");
                     None
                 }
             };
+            observability::observe_stage_latency("vote_submit", vote_started);
 
             let processed = ProcessedProposal {
                 proposal,
@@ -351,9 +392,12 @@ impl Agent {
                     "gov-agent processed proposal {} with vote {:?}",
                     processed.proposal.proposal_id, processed.decision.vote
                 ))
+                .instrument(proposal_span.clone())
                 .await;
 
             state.proposals.insert(key, processed);
+            observability::incr_proposals_processed();
+            observability::record_last_processed_proposal_timestamp();
         }
 
         Ok(())

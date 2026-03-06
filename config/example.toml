@@ -71,3 +71,11 @@ model = "venice-uncensored"
 enabled = false
 bot_token_env = "GOV_AGENT_TELEGRAM_BOT_TOKEN"
 chat_id = ""
+
+[observability]
+metrics_enabled = true
+metrics_bind = "127.0.0.1:9464"
+# Optional OTLP endpoint (for OpenTelemetry traces), e.g. "http://127.0.0.1:4317"
+otlp_endpoint = ""
+otlp_service_name = "gov-agent"
+otlp_timeout_secs = 5

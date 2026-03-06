@@ -186,12 +186,6 @@ async fn analyze_bundle_lightweight(
     let files = manifest.files.clone().unwrap_or_default();
 
     let has_package = files.iter().any(|f| f.path == "package.json");
-    let has_manifest = bundle_fetcher
-        .fetch_text_file(root_cid, "manifest.json", MAX_TEXT_FETCH_BYTES)
-        .await
-        .ok()
-        .flatten()
-        .is_some();
     let has_vibefi = files.iter().any(|f| f.path == "vibefi.json");
 
     if has_package {
@@ -202,19 +196,12 @@ async fn analyze_bundle_lightweight(
         *score -= 0.5;
     }
 
-    if !has_manifest {
-        findings.push(Finding {
-            severity: Severity::Warning,
-            message: "bundle is missing manifest.json".to_string(),
-        });
-        *score -= 0.05;
-    }
     if !has_vibefi {
         findings.push(Finding {
             severity: Severity::Warning,
             message: "bundle is missing vibefi.json".to_string(),
         });
-        *score -= 0.05;
+        *score -= 0.5;
     }
 
     let source_candidates = files
@@ -263,10 +250,6 @@ async fn build_llm_score(
         Some(custom) => format!("{custom}\n\n{SEMANTIC_SCORING_RUBRIC}\n\n{base_prompt}"),
         None => format!("{SEMANTIC_SCORING_RUBRIC}\n\n{base_prompt}"),
     };
-    let findings_trace = findings
-        .iter()
-        .map(|finding| format!("{:?}: {}", finding.severity, finding.message))
-        .collect::<Vec<_>>();
 
     tracing::debug!(
         proposal_id = %proposal.proposal_id,
@@ -278,12 +261,18 @@ async fn build_llm_score(
         prompt_len = prompt.len(),
         "review stage prepared LLM prompt inputs"
     );
-    tracing::trace!(
-        proposal_id = %proposal.proposal_id,
-        findings = ?findings_trace,
-        prompt = %prompt,
-        "review stage prepared full LLM prompt"
-    );
+    if tracing::enabled!(tracing::Level::TRACE) {
+        let findings_trace = findings
+            .iter()
+            .map(|finding| format!("{:?}: {}", finding.severity, finding.message))
+            .collect::<Vec<_>>();
+        tracing::trace!(
+            proposal_id = %proposal.proposal_id,
+            findings = ?findings_trace,
+            prompt = %prompt,
+            "review stage prepared full LLM prompt"
+        );
+    }
 
     let response = llm
         .analyze_best_effort(&LlmContext {
@@ -521,7 +510,10 @@ mod tests {
         types::{DecodedAction, Proposal},
     };
 
-    use super::{build_bundle_snapshot, detect_suspicious_tokens, review_proposal};
+    use super::{
+        build_bundle_snapshot, detect_suspicious_tokens, prepare_bundle_text_for_llm,
+        review_proposal,
+    };
 
     #[test]
     fn source_detection_finds_risky_tokens() {
@@ -547,6 +539,20 @@ mod tests {
     fn parse_llm_score_accepts_low_value_payload() {
         let score = super::parse_llm_score(&json!({ "score": 0.05 }).to_string());
         assert_eq!(score, Some(0.05));
+    }
+
+    #[test]
+    fn prepare_bundle_text_compacts_valid_json_files() {
+        let raw = "{\n  \"a\": 1,\n  \"b\": [1, 2]\n}\n";
+        let prepared = prepare_bundle_text_for_llm("config.json", raw, true);
+        assert_eq!(prepared, r#"{"a":1,"b":[1,2]}"#);
+    }
+
+    #[test]
+    fn prepare_bundle_text_falls_back_for_invalid_json_files() {
+        let raw = "{\n  \"a\": 1,\n\n  invalid\n}\n";
+        let prepared = prepare_bundle_text_for_llm("config.json", raw, true);
+        assert_eq!(prepared, "{\n\"a\": 1,\ninvalid\n}");
     }
 
     #[tokio::test]
@@ -733,6 +739,81 @@ mod tests {
             "expected low review score for red-team fixture, got {}",
             review.score
         );
+        assert!(review.llm_score.is_none());
+
+        let _ = fs::remove_dir_all(&cache_root);
+    }
+
+    #[tokio::test]
+    async fn deterministic_score_is_clamped_to_zero_when_penalties_underflow() {
+        let cache_root = temp_cache_root("gov-agent-score-clamp");
+        let root_cid = "bafy-score-clamp";
+        let cid_dir = cache_root.join(root_cid);
+        fs::create_dir_all(&cid_dir).expect("create cache cid dir");
+
+        fs::write(
+            cid_dir.join("manifest.json"),
+            r#"{
+  "name":"underflow-test",
+  "version":"1.0.0",
+  "files":[
+    {"path":"package.json","bytes":2}
+  ]
+}"#,
+        )
+        .expect("write manifest");
+        fs::write(cid_dir.join("package.json"), "{}").expect("write package");
+
+        let fetcher = BundleFetcher::new(&IpfsConfig {
+            gateway_url: "http://127.0.0.1:1".to_string(),
+            request_timeout_secs: 1,
+            cache_dir: Some(cache_root.clone()),
+        })
+        .expect("build fetcher");
+
+        let proposal = Proposal {
+            proposal_id: "2".to_string(),
+            proposer: "0x0000000000000000000000000000000000000001".to_string(),
+            description: "score clamp fixture".to_string(),
+            vote_start: 1,
+            vote_end: 100,
+            block_number: 1,
+            tx_hash: None,
+            targets: vec![],
+            values: vec![],
+            calldatas: vec![],
+            action: DecodedAction::PublishDapp {
+                root_cid: root_cid.to_string(),
+                name: "underflow-test".to_string(),
+                version: "1.0.0".to_string(),
+                description: "fixture".to_string(),
+            },
+            discovered_at: Utc::now(),
+        };
+
+        let review = review_proposal(
+            &proposal,
+            &ReviewConfig {
+                prompt_file: None,
+                max_bundle_bytes: 40 * 1024 * 1024,
+                minify_bundle_text: false,
+            },
+            &DecisionConfig {
+                profile: None,
+                approve_threshold: None,
+                reject_threshold: None,
+                deterministic_weight: Some(0.70),
+                llm_weight: Some(0.30),
+            },
+            &fetcher,
+            &disabled_llm(),
+            None,
+        )
+        .await
+        .expect("review proposal");
+
+        assert_eq!(review.deterministic_score, Some(0.0));
+        assert_eq!(review.score, 0.0);
         assert!(review.llm_score.is_none());
 
         let _ = fs::remove_dir_all(&cache_root);
